@@ -272,22 +272,57 @@
             let lastError = null;
             for (const url of urlsToTry) {
                 try {
-                    const response = await fetch('/api/proxy', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            targetUrl: url,
-                            action,
-                            ...payload,
-                            user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
-                        })
-                    });
+                    let response;
+                    let useDirect = window.location.hostname.includes('netlify') || 
+                                    window.location.hostname.includes('github.io') || 
+                                    window.location.hostname.includes('vercel.app') || 
+                                    window.location.hostname.includes('firebaseapp.com');
 
-                    if (!response.ok) {
+                    if (!useDirect) {
+                        try {
+                            response = await fetch('/api/proxy', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    targetUrl: url,
+                                    action,
+                                    ...payload,
+                                    user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
+                                })
+                            });
+
+                            if (response.status === 404) {
+                                console.warn("Proxy endpoint not found (404). Falling back to direct Apps Script call.");
+                                useDirect = true;
+                            }
+                        } catch (proxyErr) {
+                            console.warn("Proxy call failed, falling back to direct Apps Script call:", proxyErr);
+                            useDirect = true;
+                        }
+                    }
+
+                    if (useDirect) {
+                        // Direct POST request to Google Apps Script. 
+                        // Using 'text/plain;charset=utf-8' ensures it remains a 'simple request'
+                        // and bypasses CORS preflight (OPTIONS) restrictions standard browsers enforce.
+                        response = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'text/plain;charset=utf-8'
+                            },
+                            body: JSON.stringify({
+                                action,
+                                ...payload,
+                                user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
+                            })
+                        });
+                    }
+
+                    if (!response || !response.ok) {
                         const errJson = await response.json().catch(() => null);
-                        const errMsg = errJson && errJson.error ? errJson.error : `Ağ hatası (${response.status})`;
+                        const errMsg = errJson && errJson.error ? errJson.error : `Ağ hatası (${response ? response.status : 'Bağlantı Yok'})`;
                         throw new Error(errMsg);
                     }
                     
