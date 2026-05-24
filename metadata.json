@@ -1,0 +1,6 @@
+{
+  "name": "BAKIM ŞUBE YOKLAMA",
+  "description": "Personel Takip ve Harcırah Hesaplama Sistemi",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
