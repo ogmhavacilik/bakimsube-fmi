@@ -458,15 +458,17 @@
         const Modal = ({ isOpen, onClose, title, sizeCls = 'max-w-md', children }) => {
             if (!isOpen) return null;
             return (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-                    <div className={`bg-forest-900 border border-forest-700 w-full ${sizeCls} rounded-2xl shadow-2xl animate-slide-up`}>
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-forest-700">
-                            <h3 className="font-bold text-xl">{title}</h3>
-                            <button onClick={onClose} className="text-forest-400 hover:text-white transition-colors">
-                                <Icon name="X" size={24} />
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in overflow-hidden">
+                    <div className={`bg-forest-900 border border-forest-700 w-full ${sizeCls} rounded-2xl shadow-2xl animate-slide-up flex flex-col max-h-[96vh] sm:max-h-[90vh] overflow-hidden`}>
+                        <div className="flex items-center justify-between px-4 py-3 sm:px-6 sm:py-4 border-b border-forest-700 flex-shrink-0">
+                            <h3 className="font-extrabold text-base sm:text-lg text-white truncate max-w-[80vw]">{title}</h3>
+                            <button onClick={onClose} className="text-forest-400 hover:text-white transition-colors p-1" id="modal-close-btn">
+                                <Icon name="X" size={20} className="sm:w-6 sm:h-6" />
                             </button>
                         </div>
-                        <div className="p-6">{children}</div>
+                        <div className="p-4 sm:p-6 overflow-y-auto custom-scrollbar flex-1 min-h-0">
+                            {children}
+                        </div>
                     </div>
                 </div>
             );
@@ -3946,36 +3948,38 @@
                                             return (
                                                 <div 
                                                     key={tx.id} 
-                                                    className={`p-4 ${isPending ? 'bg-amber-900/10 border-amber-500/20' : (isHolidayStandby ? 'bg-fuchsia-950/25 border-fuchsia-800/40 shadow-sm shadow-fuchsia-950/20' : isStandby ? 'bg-violet-950/15 border-violet-800/20' : (isEarned ? 'bg-forest-900/50 border-forest-800' : 'bg-rose-900/10 border-rose-500/10'))} border rounded-2xl flex items-center justify-between group transition-all`}
+                                                    className={`p-3 sm:p-4 ${isPending ? 'bg-amber-900/10 border-amber-500/20' : (isHolidayStandby ? 'bg-fuchsia-950/25 border-fuchsia-800/40 shadow-sm shadow-fuchsia-950/20' : isStandby ? 'bg-violet-950/15 border-violet-800/20' : (isEarned ? 'bg-forest-900/50 border-forest-800' : 'bg-rose-900/10 border-rose-500/10'))} border rounded-2xl flex flex-col sm:flex-row gap-3 sm:items-center justify-between group transition-all`}
                                                 >
-                                                    <div className="flex items-center gap-4 flex-1">
-                                                        <div className={`p-3 rounded-xl ${isPending ? 'bg-amber-500/10' : (isHolidayStandby ? 'bg-fuchsia-500/10' : isStandby ? 'bg-violet-500/10' : (isEarned ? (isPlannedDuty ? 'bg-blue-500/10' : 'bg-emerald-500/10') : 'bg-rose-500/10'))}`}>
+                                                    <div className="flex items-start sm:items-center gap-3 sm:gap-4 flex-1 min-w-0">
+                                                        <div className={`p-2.5 sm:p-3 rounded-xl flex-shrink-0 ${isPending ? 'bg-amber-500/10' : (isHolidayStandby ? 'bg-fuchsia-500/10' : isStandby ? 'bg-violet-500/10' : (isEarned ? (isPlannedDuty ? 'bg-blue-500/10' : 'bg-emerald-500/10') : 'bg-rose-500/10'))}`}>
                                                             <Icon 
                                                                 name={isPending ? 'Clock' : (isHolidayStandby ? 'Award' : isStandby ? 'Shield' : (isEarned ? 'ArrowUpRight' : 'ArrowDownRight'))} 
-                                                                size={20} 
+                                                                size={18} 
                                                                 className={isPending ? 'text-amber-500' : (isHolidayStandby ? 'text-fuchsia-400' : isStandby ? 'text-violet-400' : (isEarned ? 'text-emerald-400' : 'text-rose-400'))} 
                                                             />
                                                         </div>
-                                                        <div>
-                                                            <div className="flex items-center gap-2">
-                                                                <p className="font-black text-white text-sm uppercase">
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-1">
+                                                                <p className="font-black text-white text-xs sm:text-sm uppercase truncate">
                                                                     {tx.description || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
                                                                 </p>
-                                                                {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30 z-10">RESMİ TATİL BEKLEME (+2 Puan)</span>} {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30 z-10">NORMAL BEKLEME (+1 Puan)</span>} {isAuto && (
+                                                                {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">RESMİ TATİL (+2)</span>}
+                                                                {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">BEKLEME (+1)</span>}
+                                                                {isAuto && (
                                                                     <span className="bg-forest-700 text-[8px] px-1 rounded text-forest-300 font-black uppercase">OTO</span>
                                                                 )}
                                                                 {isPending && (
                                                                     <span className="bg-amber-500 text-[8px] px-1 rounded text-white font-black uppercase">BEKLEYEN</span>
                                                                 )}
                                                             </div>
-                                                            <div className="flex items-center gap-3 text-[10px] text-forest-500 font-bold">
+                                                            <div className="flex flex-wrap items-center gap-3 text-[10px] text-forest-500 font-bold">
                                                                 <span className="flex items-center gap-1"><Icon name="Calendar" size={10} /> {formatDate(tx.date)}</span>
                                                                 {tx.shift && <span className="flex items-center gap-1"><Icon name="Clock" size={10} /> {tx.shift}</span>}
                                                             </div>
                                                         </div>
                                                     </div>
-                                                    <div className="flex items-center gap-4">
-                                                        <div className="text-right">
+                                                    <div className="flex items-center justify-end sm:justify-start gap-4 flex-shrink-0 border-t border-forest-800/20 sm:border-0 pt-2 sm:pt-0">
+                                                        <div className="text-right w-full sm:w-auto">
                                                             {editingTxId === tx.id ? (
                                                                 <div className="flex flex-col gap-2 items-end">
                                                                     <div className="flex items-center gap-2">
@@ -4004,7 +4008,7 @@
                                                                     </div>
                                                                 </div>
                                                             ) : (
-                                                                <div className="flex items-center gap-3">
+                                                                <div className="flex items-center justify-end gap-3">
                                                                     {adminRole && !isAuto && (
                                                                         <button 
                                                                             type="button"
@@ -4021,7 +4025,7 @@
                                                                         </button>
                                                                     )}
                                                                     <div className="flex flex-col items-end">
-                                                                        <p className={`font-black text-lg leading-tight ${isPending ? 'text-amber-500' : ((isStandby || isHolidayStandby) ? 'text-purple-400' : (isEarned ? 'text-emerald-400' : 'text-rose-400'))}`}>
+                                                                        <p className={`font-black text-base sm:text-lg leading-tight ${isPending ? 'text-amber-500' : ((isStandby || isHolidayStandby) ? 'text-purple-400' : (isEarned ? 'text-emerald-400' : 'text-rose-400'))}`}>
                                                                             {isEarned ? '+' : '-'}{hours.toFixed(1)} s
                                                                         </p>
                                                                         {isEarned && Math.abs(parseFloat(tx.displayHours || 0) - parseFloat(tx.hours || 0)) > 0.1 && (
@@ -4166,8 +4170,8 @@
                                                     Tarih, Saat/Gün ve Açıklama Zorunludur
                                                 </p>
                                             </div>
-                                            <div className="relative px-6">
-                                                <div className="absolute inset-y-0 left-9 flex items-center pointer-events-none">
+                                            <div className="relative">
+                                                <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
                                                     <Icon name="Search" size={12} className="text-forest-600" />
                                                 </div>
                                                 <input 
@@ -4175,7 +4179,7 @@
                                                     placeholder="İsim ile ara..."
                                                     value={searchTerm}
                                                     onChange={(e) => setSearchTerm(e.target.value)}
-                                                    className={`w-full bg-forest-900 border ${validationErrors.includes('personId') ? 'border-rose-500 animate-shake' : 'border-forest-800'} rounded-xl pl-8 pr-4 py-1.5 text-white text-xs focus:ring-1 focus:ring-forest-500 outline-none transition-all shadow-inner`}
+                                                    className={`w-full bg-forest-900 border ${validationErrors.includes('personId') ? 'border-rose-500 animate-shake' : 'border-forest-800'} rounded-xl pl-8 pr-3 py-1.5 text-white text-xs focus:ring-1 focus:ring-forest-500 outline-none transition-all shadow-inner`}
                                                 />
                                             </div>
                                         {searchTerm.length >= 1 ? (
@@ -4262,15 +4266,15 @@
                                 {/* Status Info */}
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className={`${modalType === 'use' ? 'col-span-2' : ''} bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl flex flex-col gap-2`}>
-                                        <div className="flex items-center justify-between">
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                                             <div className="flex items-center gap-2">
-                                                <Icon name="Info" size={14} className="text-blue-400" />
+                                                <Icon name="Info" size={14} className="text-blue-400 flex-shrink-0" />
                                                 <div className="flex flex-col">
                                                     <p className="text-[10px] font-bold text-blue-200">Yoklama Bilgisi</p>
                                                     <p className="text-[8px] text-forest-500 font-bold uppercase">{formData.date === getIstanbulToday() ? 'Bugünkü Durum' : 'Seçilen Tarih Durumu'}</p>
                                                 </div>
                                             </div>
-                                            <div className="flex flex-col items-end gap-1">
+                                            <div className="flex flex-row sm:flex-col items-center sm:items-end gap-1.5 flex-wrap">
                                                 <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ring-1 ${(() => {
                                                     const recToday = getAttendanceRecord(selectedPerson?.id || formData.personId, getIstanbulToday());
                                                     const status = String(recToday.status || '').toUpperCase();
@@ -4330,90 +4334,90 @@
                                     )}
                                 </div>
 
-                                <div className="space-y-4">
+                                <div className="space-y-3 sm:space-y-4">
                                     {modalType === 'add' ? (
                                         <>
-                                            <div className="grid grid-cols-2 gap-4">
+                                            <div className="grid grid-cols-2 gap-2.5 sm:gap-4">
                                                 <div className="relative group">
-                                                    <label className="block text-xs font-black text-forest-400 uppercase mb-2 ml-1">Mesai Türü</label>
-                                                    <div className="w-full bg-forest-900 border border-forest-800 rounded-xl px-4 py-3 text-white flex items-center justify-between opacity-80">
-                                                        <span className="font-bold">{formData.shift}</span>
+                                                    <label className="block text-[11px] sm:text-xs font-black text-forest-400 uppercase mb-1 ml-1">Mesai Türü</label>
+                                                    <div className="w-full bg-forest-900 border border-forest-800 rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 text-white flex items-center justify-between opacity-80">
+                                                        <span className="font-bold text-xs sm:text-sm">{formData.shift}</span>
                                                         <Icon name={formData.shift === 'Gece' ? 'Moon' : 'Sun'} size={14} className={formData.shift === 'Gece' ? 'text-blue-400' : 'text-amber-400'} />
                                                     </div>
                                                     <div className="absolute top-0 right-0 -mt-2 group-hover:block hidden bg-forest-800 text-[8px] p-1 rounded font-bold text-forest-400">OTOMATİK</div>
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-black text-forest-400 uppercase mb-2 ml-1">Tarih</label>
+                                                    <label className="block text-[11px] sm:text-xs font-black text-forest-400 uppercase mb-1 ml-1">Tarih</label>
                                                     <input 
                                                         type="date" 
                                                         required
                                                         value={formData.date}
                                                         onChange={(e) => setFormData({...formData, date: e.target.value})}
-                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('date') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
+                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('date') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-3 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
                                                     />
                                                 </div>
                                             </div>
                                             
-                                            <div className="grid grid-cols-2 gap-4">
+                                            <div className="grid grid-cols-2 gap-2.5 sm:gap-4">
                                                 <div>
-                                                    <label className="block text-xs font-black text-forest-400 uppercase mb-2 ml-1">Başlangıç Saati</label>
+                                                    <label className="block text-[11px] sm:text-xs font-black text-forest-400 uppercase mb-1 ml-1">Başlangıç Saati</label>
                                                     <input 
                                                         type="time" 
                                                         required
                                                         value={formData.startTime}
                                                         onChange={(e) => setFormData({...formData, startTime: e.target.value})}
-                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('startTime') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
+                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('startTime') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-3 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs font-black text-forest-400 uppercase mb-2 ml-1">Bitiş Saati</label>
+                                                    <label className="block text-[11px] sm:text-xs font-black text-forest-400 uppercase mb-1 ml-1">Bitiş Saati</label>
                                                     <input 
                                                         type="time" 
                                                         required
                                                         value={formData.endTime}
                                                         onChange={(e) => setFormData({...formData, endTime: e.target.value})}
-                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('endTime') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
+                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('endTime') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-3 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
                                                     />
                                                 </div>
                                             </div>
                                         </>
                                     ) : (
-                                        <div className="space-y-4 animate-fade-in">
-                                            <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-3 sm:space-y-4 animate-fade-in">
+                                            <div className="grid grid-cols-2 gap-2.5 sm:gap-4">
                                                 <div>
-                                                    <label className="block text-[10px] font-black text-forest-400 uppercase mb-1.5 ml-1">İzin Başlangıç Tarihi</label>
+                                                    <label className="block text-[10px] sm:text-[11px] font-black text-forest-400 uppercase mb-1 ml-1">İzin Başlangıç Tarihi</label>
                                                     <input 
                                                         type="date" 
                                                         required
                                                         value={formData.date}
                                                         onChange={(e) => setFormData({...formData, date: e.target.value})}
-                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('date') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-4 py-2.5 text-white text-sm focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
+                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('date') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-3 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-[10px] font-black text-forest-400 uppercase mb-1.5 ml-1">İzin Bitiş Tarihi</label>
+                                                    <label className="block text-[10px] sm:text-[11px] font-black text-forest-400 uppercase mb-1 ml-1">İzin Bitiş Tarihi</label>
                                                     <input 
                                                         type="date" 
                                                         required
                                                         value={formData.endDate}
                                                         min={formData.date}
                                                         onChange={(e) => setFormData({...formData, endDate: e.target.value})}
-                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('endDate') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-4 py-2.5 text-white text-sm focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
+                                                        className={`w-full bg-forest-950 border ${validationErrors.includes('endDate') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-3 py-2 sm:px-4 sm:py-2.5 text-xs sm:text-sm text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all`}
                                                     />
                                                 </div>
                                             </div>
                                             <div className="flex flex-col">
-                                                <label className="block text-[10px] font-black text-forest-400 uppercase mb-1.5 ml-1">Kullanılacak Gün Sayısı</label>
+                                                <label className="block text-[10px] sm:text-[11px] font-black text-forest-400 uppercase mb-1 ml-1">Kullanılacak Gün Sayısı</label>
                                                 <div className="relative">
                                                     <input 
                                                         type="number" 
                                                         readOnly
                                                         value={formData.days}
-                                                        className="w-full bg-forest-900/50 border border-forest-800 rounded-xl px-4 py-3 text-forest-200 focus:ring-2 focus:ring-forest-500 outline-none transition-all font-black text-xl cursor-not-allowed"
+                                                        className="w-full bg-forest-900/50 border border-forest-800 rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 text-forest-200 focus:ring-2 focus:ring-forest-500 outline-none transition-all font-black text-base sm:text-lg cursor-not-allowed"
                                                     />
-                                                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-forest-600 uppercase">GÜN</span>
+                                                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] sm:text-xs font-black text-forest-600 uppercase">GÜN</span>
                                                 </div>
-                                                <p className="text-[10px] text-forest-500 font-bold mt-1.5 px-1 uppercase tracking-tighter italic">
+                                                <p className="text-[9px] sm:text-[10px] text-forest-500 font-bold mt-1 px-1 uppercase tracking-tighter italic leading-snug">
                                                     * Her gün için 8 saat mesai bakiyesinden düşülecektir.
                                                 </p>
                                             </div>
@@ -4421,35 +4425,35 @@
                                     )}
 
                                     <div>
-                                        <label className="block text-xs font-black text-forest-400 uppercase mb-2 ml-1">
+                                        <label className="block text-[11px] sm:text-xs font-black text-forest-400 uppercase mb-1 ml-1">
                                             {modalType === 'add' ? 'Hesaplanan Süre (Saat)' : 'Toplam Düşülecek Süre'}
                                         </label>
-                                        <div className={`w-full bg-forest-900 border ${validationErrors.includes('hours') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-4 py-3 text-emerald-400 font-black text-xl flex items-center justify-center transition-all`}>
+                                        <div className={`w-full bg-forest-900 border ${validationErrors.includes('hours') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 text-emerald-400 font-black text-base sm:text-lg flex items-center justify-center transition-all`}>
                                             {modalType === 'use' ? `${formData.days || '0'} Gün (${(parseFloat(formData.days || 0) * 8).toFixed(1)} Saat)` : `${formData.hours || '0.0'} Saat Mesai`}
                                         </div>
                                         {modalType === 'use' && (
-                                            <p className="text-[10px] text-amber-500/70 font-bold uppercase mt-1 ml-1">
+                                            <p className="text-[9px] sm:text-[10px] text-amber-500/70 font-bold uppercase mt-1 ml-1 leading-snug">
                                                 * Seçilen tarihler arası toplam {formData.days} gün FMİ kullanımı olarak işlenecektir.
                                             </p>
                                         )}
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-black text-forest-400 uppercase mb-2 ml-1">Açıklama</label>
+                                        <label className="block text-[11px] sm:text-xs font-black text-forest-400 uppercase mb-1 ml-1">Açıklama</label>
                                         <textarea 
                                             placeholder="Mesai gerekçesi veya lokasyon bilgisi..."
                                             value={formData.description}
                                             onChange={(e) => setFormData({...formData, description: e.target.value})}
-                                            className={`w-full bg-forest-950 border ${validationErrors.includes('description') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all h-20 resize-none text-sm`}
+                                            className={`w-full bg-forest-950 border ${validationErrors.includes('description') ? 'border-rose-500 animate-shake' : 'border-forest-700'} rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 text-white focus:ring-2 focus:ring-forest-500 outline-none transition-all h-16 sm:h-20 resize-none text-xs sm:text-sm`}
                                         ></textarea>
                                     </div>
                                 </div>
 
-                                <div className="pt-2 flex gap-3">
+                                <div className="pt-2 flex flex-col sm:flex-row gap-2.5 sm:gap-3">
                                      <button 
                                         type="button"
                                         onClick={() => { setModalType(null); setSelectedPerson(null); setSearchTerm(''); setSelectedPendingTx(null); }}
-                                        className="flex-1 bg-forest-800 text-forest-300 py-3.5 rounded-xl font-bold hover:bg-forest-700 transition-all border border-forest-700"
+                                        className="w-full sm:flex-1 bg-forest-800 text-forest-300 py-3 rounded-xl font-bold hover:bg-forest-700 transition-all border border-forest-700 text-xs sm:text-sm uppercase tracking-wider order-3 sm:order-1"
                                     >
                                         İPTAL
                                     </button>
@@ -4465,16 +4469,16 @@
                                                     setSearchTerm('');
                                                 }
                                             }}
-                                            className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-black py-3.5 rounded-xl transition-all uppercase text-[10px] border border-rose-400 shadow-lg shadow-rose-900/40"
+                                            className="w-full sm:flex-1 bg-rose-600 hover:bg-rose-500 text-white font-black py-3 rounded-xl transition-all uppercase text-xs sm:text-sm border border-rose-400 shadow-lg shadow-rose-900/40 order-2"
                                         >
                                             REDDET
                                         </button>
                                     )}
                                     <button 
                                         type="submit"
-                                        className={`flex-1 ${modalType === 'add' ? 'bg-forest-500 shadow-forest-500/20' : 'bg-amber-600 shadow-amber-600/20'} text-white py-3.5 rounded-xl font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all text-sm uppercase tracking-widest`}
+                                        className={`w-full sm:flex-1 ${modalType === 'add' ? 'bg-forest-500 shadow-forest-500/20' : 'bg-amber-600 shadow-amber-600/20'} text-white py-3 rounded-xl font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all text-xs sm:text-sm uppercase tracking-widest order-1 sm:order-3`}
                                     >
-                                        {selectedPendingTx ? 'KONTROL EDİLDİ VE ONAYLA' : 'KAYDET VE ONAYLA'}
+                                        {selectedPendingTx ? 'KONTROL ET VE ONAYLA' : 'KAYDET VE ONAYLA'}
                                     </button>
                                 </div>
                             </form>
