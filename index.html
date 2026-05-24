@@ -1031,12 +1031,12 @@
                     });
                     const pid = p ? String(p.id).trim().toLowerCase() : pidRaw;
                     
-                    // 1. FMİ Usage (Always 8 hours as per user request, only if transferred/approved)
+                    // 1. FMİ Usage (Always 8 hours as per user request, automatically from script for 1 May - 31 Dec)
                     const isStatusIzin = normStatus.trim() === 'İZİN' || normStatus.trim() === 'IZIN';
                     const cleanLeave = leave.replace(/\./g, '').trim();
                     const isLeaveFmi = cleanLeave === 'FMİ' || cleanLeave === 'FMI' || cleanLeave.includes('FMİ') || cleanLeave.includes('FMI');
-                    const isTransferred = record.isTransferred === true || String(record.isTransferred || '').toLocaleUpperCase('tr-TR').trim() === 'EVET';
-                    const isFmi = isStatusIzin && isLeaveFmi && isStandbyDate(dateStr) && isTransferred;
+                    const isStatusFmi = normStatus.includes('FMİ') || normStatus.includes('FMI');
+                    const isFmi = ((isStatusIzin && isLeaveFmi) || isStatusFmi) && isStandbyDate(dateStr);
                     if (isFmi) {
                         attendanceVirtual.push({
                             id: `auto-fmi-${pid}-${dateStr}`,
@@ -2674,9 +2674,9 @@
                     const leave = String(r.leaveType || '').toUpperCase('tr-TR').replace(/\./g, '').trim();
                     const isStatusIzin = status === 'İZİN' || status === 'IZIN';
                     const isLeaveFmi = leave === 'FMİ' || leave === 'FMI' || leave.includes('FMİ') || leave.includes('FMI');
-                    const isTransferred = r.isTransferred === true || String(r.isTransferred || '').toLocaleUpperCase('tr-TR').trim() === 'EVET';
+                    const isStatusFmi = status.includes('FMİ') || status.includes('FMI');
                     
-                    return isStatusIzin && isLeaveFmi && isTransferred;
+                    return (isStatusIzin && isLeaveFmi) || isStatusFmi;
                 });
             }, [attendanceRecords]);
 
@@ -3672,7 +3672,7 @@
                                         const dateStr = normalizeDateSimple(r.date);
                                         return pid === targetPid && 
                                                dateStr.startsWith('2026') &&
-                                               status.includes('FMİ');
+                                               ((status.includes('FMİ') || status.includes('FMI')) || ((status.includes('İZİN') || status.includes('IZIN')) && String(r.leaveType || '').toLocaleUpperCase('tr-TR').includes('FMİ'))) && isStandbyDate(dateStr);
                                     }).map(r => ({
                                         id: `fmi-auto-${r.date}`,
                                         date: normalizeDateSimple(r.date),
