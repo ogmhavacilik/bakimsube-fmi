@@ -57,11 +57,11 @@
     </style>
 
     <!-- Babel Standalone for JSX & ESM transpilation -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous"></script>
 
     <!-- ExcelJS and FileSaver CDN for Styled Excel Export -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js" crossorigin="anonymous"></script>
 
     <!-- Import Maps for Modules -->
     <script type="importmap">
@@ -70,6 +70,7 @@
     "react": "https://esm.sh/react@18.2.0",
     "react-dom": "https://esm.sh/react-dom@18.2.0",
     "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
     "lucide-react": "https://esm.sh/lucide-react@0.292.0?external=react,react-dom"
   }
 }
@@ -106,7 +107,7 @@
             USED: 'USED'      // Mesai Kullanıldı
         };
 
-        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwNJ7pkBjs5rWGEBwNTg1AAMqLqRJ7mY9EyWMglPiQV01mxPVp1bZvJoIexD8XRxQKoaQ/exec";
+        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzD0VvylhElfK-WIPn480pruIYOR9hn9qVuGEa0dc3IMQzdBQMc7LXOi6VlCf5DvVB3jQ/exec";
         const PERSONNEL_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyKwM9Odc7tz8kqrBa00kikQbdVTstgJmrRzOPNDnsR6xL9-9vXWUlvOdVN_8HxJBKEqw/exec";
         const SYSTEM_ID = "0005536572913";
 
@@ -140,14 +141,26 @@
         const formatDateLocal = (date) => {
             if (!date) return "";
             let s = String(date).trim();
+            
+            // Handle DD.MM.YYYY, DD-MM-YYYY, DD/MM/YYYY formats
+            const matchDmy = s.split(' ')[0].match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{4})$/);
+            if (matchDmy) {
+                const day = matchDmy[1].padStart(2, '0');
+                const month = matchDmy[2].padStart(2, '0');
+                const year = matchDmy[3];
+                return `${year}-${month}-${day}`;
+            }
+            
             if (s.includes('.')) {
                 const parts = s.split(' ')[0].split('.');
                 if (parts.length === 3) {
-                    s = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                    return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
                 }
             }
+            
             s = s.split(/[T ]/)[0];
             if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+            
             const d = new Date(date);
             if (isNaN(d.getTime())) return s;
             const y = d.getFullYear();
@@ -158,6 +171,52 @@
 
         const cleanPersonnelId = (id) => {
             return String(id || '').trim().toLowerCase();
+        };
+
+        const safeLocalStorageSetItem = (key, value) => {
+            try {
+                localStorage.setItem(key, value);
+            } catch (e) {
+                console.warn(`Local storage quota exceeded or failed for key '${key}':`, e);
+                if (key === 'ogm_attendance' || key === 'ogm_overtime_tx') {
+                    try {
+                        let parsed = JSON.parse(value);
+                        if (Array.isArray(parsed)) {
+                            const currentYear = new Date().getFullYear();
+                            const reduced = parsed.filter(item => {
+                                if (!item || !item.date) return false;
+                                return item.date.startsWith(String(currentYear)) || item.date.startsWith(String(currentYear - 1));
+                            });
+                            if (reduced.length > 0) {
+                                try {
+                                    localStorage.setItem(key, JSON.stringify(reduced));
+                                    console.log(`Saved reduced ${key} to local storage (${reduced.length} entries).`);
+                                    return;
+                                } catch (innerErr) {
+                                    console.warn(`Still failing, trying to store only recent entries for '${key}'...`);
+                                    const recent = reduced.filter(item => {
+                                        if (!item || !item.date) return false;
+                                        const dateObj = new Date(item.date);
+                                        const now = new Date();
+                                        const diffTime = Math.abs(now - dateObj);
+                                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                        return diffDays <= 45;
+                                    });
+                                    try {
+                                        localStorage.setItem(key, JSON.stringify(recent));
+                                        console.log(`Saved ultra-reduced ${key} to local storage (${recent.length} entries).`);
+                                        return;
+                                    } catch (ultraErr) {
+                                        console.error("Local storage completely failed even for ultra-reduced keys.", ultraErr);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.error("Error processing fallback for quota exceed:", err);
+                    }
+                }
+            }
         };
 
         const isStandbyDate = (dateStr) => {
@@ -483,6 +542,7 @@
             const [countdown, setCountdown] = useState(60); // 1 minute in seconds
             const [updateNotice, setUpdateNotice] = useState(null); // Notice modal details
             const isFirstLoad = React.useRef(true);
+            const autoApprovingRef = React.useRef(false);
             const [selectedPerson, setSelectedPerson] = useState(null);
             const [hoverPhoto, setHoverPhoto] = useState(null);
             const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
@@ -518,14 +578,30 @@
             const isPersonnelInGroup = useCallback((p, role) => {
                 if (!p) return false;
                 const title = (p.title || '').trim().toLocaleUpperCase('tr-TR');
+                const unit = (p.unit || '').trim().toLocaleUpperCase('tr-TR');
                 const name = (p.fullName || '').toLocaleUpperCase('tr-TR');
                 const isSerkan = name.includes('SERKAN KOTAN') || name.includes('SERKAN KÖTEN');
-                const isUcakTech = title === 'UÇAK TEKNİKERİ' || title === 'UÇAK TEKNİSYENİ';
+                
+                const isYerDestek = title.includes('DESTEK') || title.includes('İŞÇİ') || title.includes('ISCI') || unit.includes('DESTEK') || unit.includes('YER_DESTEK') || unit.includes('YER DESTEK') || isSerkan;
+                const isTeknikEkipUnvan = [
+                    'UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ', 
+                    'UCAK TEKNIKERI', 'UCAK TEKNISYENI', 
+                    'TEKNİKER', 'TEKNİSYEN', 
+                    'TEKNIKER', 'TEKNISYEN'
+                ].some(t => title.includes(t));
+
+                const isExcludedAircraft = [
+                    'BELL-429', 'BELL 429',
+                    'B-360', 'B360',
+                    'T-70', 'T70',
+                    'C-650', 'C650',
+                    'AT-802', 'AT802'
+                ].some(pat => title.includes(pat));
 
                 if (role === 'ogm1') {
-                    return isUcakTech && !isSerkan;
+                    return isTeknikEkipUnvan && !isYerDestek && !isExcludedAircraft;
                 } else if (role === 'ogm2') {
-                    return !isUcakTech || isSerkan;
+                    return isYerDestek;
                 }
                 return true;
             }, []);
@@ -688,26 +764,23 @@
                             const date = new Date((d - 25569) * 86400 * 1000);
                             return formatDateLocal(date);
                         }
-                        if (d instanceof Date) return formatDateLocal(d);
-                        let s = String(d).trim();
-                        if (s.match(/^\d{4}-\d{2}-\d{2}/)) return s.split(/[T ]/)[0];
-                        try {
-                            const parsed = new Date(s);
-                            if (!isNaN(parsed)) return formatDateLocal(parsed);
-                        } catch(e) {}
-                        s = s.replace(/\./g, '-').replace(/\//g, '-');
-                        const parts = s.split('-');
-                        if (parts.length === 3) {
-                            if (parts[0].length === 4) return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
-                            if (parts[2].length === 4) return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-                        }
-                        return s;
+                        return formatDateLocal(d);
                     };
 
                     if (data.personnel && data.personnel.length > 0) {
                         const formattedPL = data.personnel.map(p => {
                             const getVal = (obj, keys) => {
-                                const normalizeKey = (k) => String(k || '').trim().toUpperCase().replace(/[^A-Z0-9ÜŞĞÇİÖ]/g, '');
+                                const normalizeKey = (k) => String(k || '')
+                                    .trim()
+                                    .toUpperCase()
+                                    .replace(/Ğ/g, 'G')
+                                    .replace(/Ü/g, 'U')
+                                    .replace(/Ş/g, 'S')
+                                    .replace(/İ/g, 'I')
+                                    .replace(/I/g, 'I')
+                                    .replace(/Ö/g, 'O')
+                                    .replace(/Ç/g, 'C')
+                                    .replace(/[^A-Z0-9]/g, '');
                                 const objKeys = Object.keys(obj);
                                 const normalizedObjEntries = objKeys.map(ok => ({ original: ok, normalized: normalizeKey(ok) }));
                                 
@@ -722,6 +795,7 @@
                             const pid = cleanPersonnelId(getVal(p, ['ID', 'PID', 'PERSON_ID', 'PERSONID', 'PERSONEL_ID', 'PERSONELID', 'KİŞİ ID', 'KISI ID']) || '');
                             const fullNameVal = getVal(p, ['FULL_NAME', 'FULLNAME', 'AD_SOYAD', 'ADSOYAD', 'AD_SOYADI', 'ADSOYADI', 'KISI_ADI', 'KİŞİ_ADI', 'NAME', 'AD SOYAD', 'AD SOYADI']);
                             const titleVal = getVal(p, ['TITLE', 'UNVAN', 'ÜNVAN', 'GÖREV', 'GOREV', 'ROLE', 'UNVANI', 'ÜNVANI', 'GÖREVİ', 'GOREVI']);
+                            const birimVal = getVal(p, ['BIRIM', 'BİRİM', 'BIRIMI', 'BİRİMİ', 'GRUP', 'GRUBU', 'GROUP', 'DEPARTMENT', 'DEPARTMAN']);
                             const photoUrlVal = getVal(p, ['PHOTOURL', 'PHOTO_URL', 'PHOTO', 'RESIM', 'RESİM', 'FOTOGRAF', 'FOTOĞRAF']);
                             const activeUntilVal = getVal(p, ['ACTIVE_UNTIL', 'ACTIVEUNTIL', 'AKTIF_BITIS', 'BITIS_TARIHI', 'PASIF_TARIHI']);
 
@@ -730,19 +804,30 @@
                                 id: pid,
                                 fullName: fullNameVal,
                                 title: titleVal,
+                                unit: birimVal,
                                 photoUrl: photoUrlVal || '',
                                 activeUntil: activeUntilVal
                             };
                         });
                         setPersonnel(formattedPL);
-                        localStorage.setItem('ogm_personnel', JSON.stringify(formattedPL));
+                        safeLocalStorageSetItem('ogm_personnel', JSON.stringify(formattedPL));
                     }
 
                     let latestTxList = [];
                     if (data.transactions) {
                         const formattedTX = data.transactions.map(tx => {
                             const getVal = (obj, keys) => {
-                                const normalizeKey = (k) => String(k || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+                                const normalizeKey = (k) => String(k || '')
+                                    .trim()
+                                    .toUpperCase()
+                                    .replace(/Ğ/g, 'G')
+                                    .replace(/Ü/g, 'U')
+                                    .replace(/Ş/g, 'S')
+                                    .replace(/İ/g, 'I')
+                                    .replace(/I/g, 'I')
+                                    .replace(/Ö/g, 'O')
+                                    .replace(/Ç/g, 'C')
+                                    .replace(/[^A-Z0-9]/g, '');
                                 const objKeys = Object.keys(obj);
                                 const normalizedObjEntries = objKeys.map(ok => ({ original: ok, normalized: normalizeKey(ok) }));
                                 
@@ -788,7 +873,7 @@
                         });
                         latestTxList = formattedTX;
                         setTransactions(formattedTX);
-                        localStorage.setItem('ogm_overtime_tx', JSON.stringify(formattedTX));
+                        safeLocalStorageSetItem('ogm_overtime_tx', JSON.stringify(formattedTX));
                     } else {
                         setTransactions(prevTransactions);
                     }
@@ -862,7 +947,7 @@
 
                         latestAttList = sortedAttendance;
                         setAttendanceRecords(sortedAttendance);
-                        localStorage.setItem('ogm_attendance', JSON.stringify(sortedAttendance));
+                        safeLocalStorageSetItem('ogm_attendance', JSON.stringify(sortedAttendance));
                     } else {
                         setAttendanceRecords(prevAttendance);
                     }
@@ -966,23 +1051,38 @@
             // Load Initial Data
             useEffect(() => {
                 const init = async () => {
-                    const savedTransactions = JSON.parse(localStorage.getItem('ogm_overtime_tx') || '[]');
-                    const savedAttendance = JSON.parse(localStorage.getItem('ogm_attendance') || '[]');
-                    const savedPersonnel = JSON.parse(localStorage.getItem('ogm_personnel') || '[]');
-                    const savedAdmin = localStorage.getItem('ogm_admin_role');
+                    let savedTransactions = [];
+                    let savedAttendance = [];
+                    let savedPersonnel = [];
+                    let savedAdmin = null;
+                    try {
+                        savedTransactions = JSON.parse(localStorage.getItem('ogm_overtime_tx') || '[]');
+                    } catch(e) { console.error("Failed to load savedTransactions:", e); }
+                    try {
+                        savedAttendance = JSON.parse(localStorage.getItem('ogm_attendance') || '[]');
+                    } catch(e) { console.error("Failed to load savedAttendance:", e); }
+                    try {
+                        savedPersonnel = JSON.parse(localStorage.getItem('ogm_personnel') || '[]');
+                    } catch(e) { console.error("Failed to load savedPersonnel:", e); }
+                    try {
+                        savedAdmin = localStorage.getItem('ogm_admin_role');
+                    } catch(e) { console.error("Failed to load savedAdmin:", e); }
                     
                     setTransactions(savedTransactions);
                     setAttendanceRecords(savedAttendance);
                     setPersonnel(savedPersonnel);
                     setAdminRole(savedAdmin);
                     
-                    /* 
-                    try {
-                        await apiCall('sync_auto_transactions', {}, OVERTIME_SCRIPT_URL);
-                    } catch (e) {
-                        console.error("Initial sync failed", e);
-                    }
-                    */
+                    // Siteye giriş yapıldığında arka planda senkronizasyon tetiklenir (böylece GAS tetikleyicisine gerek kalmaz)
+                    apiCall('sync_auto_transactions', {}, OVERTIME_SCRIPT_URL)
+                        .then(() => {
+                            console.log("Arka plan otomatik senkronizasyon başarıyla tamamlandı.");
+                            refreshData(true); // Sessizce verileri günceller
+                        })
+                        .catch(e => {
+                            console.error("Arka plan otomatik senkronizasyon hatası:", e);
+                        });
+
                     await refreshData();
                 };
                 init();
@@ -1098,7 +1198,8 @@
                     if (isDuty) {
                         if (isPlanned) {
                             if (!isOverseasDuty && isPlannedDutySeason(dateStr)) {
-                                const [y, m, d] = dateStr.split(' ')[0].split('-').map(Number);
+                                const datePart = formatDateLocal(dateStr);
+                                const [y, m, d] = datePart.split('-').map(Number);
                                 const dt = new Date(y, m - 1, d);
                                 const isStrictWeekend = dt.getDay() === 0 || dt.getDay() === 6;
                                 attendanceVirtual.push({
@@ -1107,7 +1208,7 @@
                                     personName: p?.fullName || pid,
                                     date: dateStr,
                                     type: TRANSACTION_TYPES.EARNED,
-                                    hours: isStrictWeekend ? 8.0 : 2.0,
+                                    hours: isStrictWeekend ? 11.0 : 3.0,
                                     description: 'OTOMATİK PLANLI GÖREV (YOKLAMA)',
                                     status: 'APPROVED',
                                     isAuto: true,
@@ -1169,7 +1270,11 @@
                     // If this person has an FMİ record today from attendance, skip any EARNED transactions for this day
                     const normId = (val) => String(val || '').trim().toLowerCase();
                     const hasAutoFmi = attendanceVirtual.some(v => normId(v.personId) === normId(tx.personId) && formatDateLocal(v.date) === formatDateLocal(tx.date) && String(v.id || '').toLowerCase().includes('fmi'));
-                    if (tx.type === TRANSACTION_TYPES.EARNED && hasAutoFmi) return false;
+                    const isTxPlannedDuty = id.includes('auto_duty') || 
+                        String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR').includes('OTOMATİK GÖREV') || 
+                        String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR').includes('PLANLI GÖREV') || 
+                        String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR').includes('GÖREV MESAİSİ');
+                    if (tx.type === TRANSACTION_TYPES.EARNED && hasAutoFmi && !isTxPlannedDuty) return false;
 
                     // Filter out ALL manual/request USED transactions because used leaves should only be calculated/counted/shown
                     // when they are actually synchronized and returned from the attendance sheet (yoklama)
@@ -1179,13 +1284,13 @@
 
                     const desc = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                     
-                    const dayType = getDayType(dateLocal);
+                    const dayType = getDayType(dateLocal) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(dateLocal));
                     const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                     const hasBeklemeInText = id.includes('standby') || desc.includes('BEKLEME');
                     const isExplicitHolidayStandby = desc.includes('RESMİ BEKLEME') || desc.includes('RESMI BEKLEME') || desc.includes('TATİL-BEKLEME') || desc.includes('TATIL-BEKLEME') || desc.includes('RESMİ TATİL BEKLEME') || desc.includes('RESMI TATIL BEKLEME') || desc.includes('RESMİ TATİL') || desc.includes('RESMI TATIL') || id.includes('hstandby') || id.includes('holidaystandby');
                     
-                    const isHolidayStandby = hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby);
-                    const isStandby = hasBeklemeInText && !isHolidayStandby;
+                    const isHolidayStandby = tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby));
+                    const isStandby = tx.isStandby !== undefined ? tx.isStandby : (hasBeklemeInText && !isHolidayStandby);
                     const isPlannedDuty = id.includes('auto_duty') || desc.includes('OTOMATİK GÖREV') || desc.includes('PLANLI GÖREV') || desc.includes('GÖREV MESAİSİ');
                     const isFmiUsage = tx.type === TRANSACTION_TYPES.USED || desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ');
 
@@ -1195,7 +1300,7 @@
                     // Broaden isDuty to include manual entries that are not standby/planned
                     const isDuty = ((id.includes('auto_duty') || desc.includes('GÖREV') || desc.includes('GOREV')) || (!isAuto && tx.type === TRANSACTION_TYPES.EARNED)) && !isStandby && !isHolidayStandby && !isPlannedDuty;
 
-                    if (isDuty || isPlannedDuty) {
+                    if (isPlannedDuty) {
                         const key = `${pid}_${dateLocal}`;
                         if (seenDuty.has(key)) return false;
                         seenDuty.add(key);
@@ -1207,25 +1312,26 @@
                     }
                     return true;
                 }).map(tx => {
+                    const newTx = { ...tx };
                     // Calculated displayHours/Points for detail view
-                    const txId = String(tx.id || tx.ID || '').toLowerCase();
+                    const txId = String(newTx.id || newTx.ID || '').toLowerCase();
                     const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync');
-                    const desc = String(tx.description || '').toLocaleUpperCase('tr-TR');
+                    const desc = String(newTx.description || newTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                     
-                    if (tx.type === TRANSACTION_TYPES.USED) {
-                        const usageHours = parseFloat(tx.hours || (tx.days ? tx.days * 8 : 8));
-                        tx.displayHours = usageHours;
-                        tx.hours = usageHours;
-                        return tx;
+                    if (newTx.type === TRANSACTION_TYPES.USED) {
+                        const usageHours = parseFloat(newTx.hours || (newTx.days ? newTx.days * 8 : 8));
+                        newTx.displayHours = usageHours;
+                        newTx.hours = usageHours;
+                        return newTx;
                     }
 
-                    const pid = cleanPersonnelId(tx.personId);
+                    const pid = cleanPersonnelId(newTx.personId);
                     const person = personnel.find(p => cleanPersonnelId(p.id) === pid);
                     const title = (person?.title || '').toLocaleUpperCase('tr-TR');
                     const name = (person?.fullName || '').toLocaleUpperCase('tr-TR');
                     const isTechnical = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => title.includes(t)) && !(name.includes('SERKAN KOTAN') || name.includes('SERKAN KÖTEN'));
                     
-                    const dayType = getDayType(tx.date);
+                    const dayType = getDayType(newTx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (newTx.dayType || getDayType(newTx.date));
                     const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                     const mult = getMultiplier(dayType, isTechnical);
 
@@ -1234,52 +1340,53 @@
                     
                     const isHolidayStandby = hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby);
                     const isStandby = hasBeklemeInText && !isHolidayStandby;
-                    const isPlannedDuty = txId.includes('auto_duty') || desc.includes('OTOMATİK GÖREV') || desc.includes('PLANLI GÖREV');
+                    const isPlannedDuty = txId.includes('auto_duty') || desc.includes('OTOMATİK GÖREV') || desc.includes('PLANLI GÖREV') || desc.includes('GÖREV MESAİSİ');
 
                     if (isHolidayStandby) {
-                        tx.displayHours = 2.0;
-                        tx.hours = 2.0;
+                        newTx.displayHours = 2.0;
+                        newTx.hours = 2.0;
                     } else if (isStandby) {
-                        tx.displayHours = 1.0;
-                        tx.hours = 1.0;
-                    } else if (isAuto) {
-                        if (isPlannedDuty) {
-                             const isWk = (() => {
-                                 if (!tx.date) return false;
-                                 const [y, m, d] = tx.date.split(' ')[0].split('-').map(Number);
-                                 const dt = new Date(y, m - 1, d);
-                                 return dt.getDay() === 0 || dt.getDay() === 6;
-                             })();
-                             tx.displayHours = isWk ? 11.0 : 3.0;
-                             tx.hours = isWk ? 11.0 : 3.0;
-                        } else if (desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ')) {
-                             tx.displayHours = 8.0;
-                             tx.hours = 8.0;
-                             tx.type = TRANSACTION_TYPES.USED;
-                        } else {
-                             tx.displayHours = parseFloat(tx.hours || 8.0) * mult;
-                             tx.hours = tx.hours || 8.0;
-                        }
+                        newTx.displayHours = 1.0;
+                        newTx.hours = 1.0;
+                    } else if (isPlannedDuty) {
+                         const isWk = (() => {
+                             if (!newTx.date) return false;
+                             const datePart = formatDateLocal(newTx.date);
+                             const [y, m, d] = datePart.split('-').map(Number);
+                             const dt = new Date(y, m - 1, d);
+                             return dt.getDay() === 0 || dt.getDay() === 6;
+                         })();
+                         newTx.displayHours = isWk ? 11.0 : 3.0;
+                         newTx.hours = isWk ? 11.0 : 3.0;
+                    } else if (isAuto && newTx.displayHours === undefined && newTx.hours === undefined) {
+                         if (desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ')) {
+                             newTx.displayHours = 8.0;
+                             newTx.hours = 8.0;
+                             newTx.type = TRANSACTION_TYPES.USED;
+                         } else {
+                             newTx.displayHours = parseFloat(newTx.hours || 8.0) * mult;
+                             newTx.hours = newTx.hours || 8.0;
+                         }
                     } else {
-                        tx.displayHours = parseFloat(tx.hours || 0) * mult;
+                        newTx.displayHours = parseFloat(newTx.hours || 0) * mult;
                     }
-                    tx.isHolidayStandby = isHolidayStandby;
-                    tx.isStandby = isStandby;
-                    return tx;
+                    newTx.isHolidayStandby = isHolidayStandby;
+                    newTx.isStandby = isStandby;
+                    return newTx;
                 });
             }, [transactions, attendanceRecords, personnel]);
 
             // Save Transactions
             useEffect(() => {
                 if (!loading) {
-                    localStorage.setItem('ogm_overtime_tx', JSON.stringify(transactions));
+                    safeLocalStorageSetItem('ogm_overtime_tx', JSON.stringify(transactions));
                 }
             }, [transactions, loading]);
 
             // Save Attendance
             useEffect(() => {
                 if (!loading) {
-                    localStorage.setItem('ogm_attendance', JSON.stringify(attendanceRecords));
+                    safeLocalStorageSetItem('ogm_attendance', JSON.stringify(attendanceRecords));
                 }
             }, [attendanceRecords, loading]);
 
@@ -1321,8 +1428,7 @@
                 // Deduping tracker
                 const processedDays = {
                     DUTY: new Set(),
-                    STANDBY: new Set(),
-                    HOLIDAY_STANDBY: new Set(),
+                    STANDBY: new Set(), // Now unified for normal and holiday standby
                     PLANNED_DUTY: new Set(),
                     USED: new Set()
                 };
@@ -1370,8 +1476,8 @@
                         const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                         const txLoc = String(tx.location || tx.DUTY_LOC || tx.LOCATION || '').toLocaleUpperCase('tr-TR');
                         const txNote = String(tx.note || tx.NOTE || '').toLocaleUpperCase('tr-TR');
-                        const dateStr = String(tx.date || '').split(' ')[0];
-                        const dayType = getDayType(dateStr);
+                        const dateStr = formatDateLocal(tx.date);
+                        const dayType = getDayType(dateStr) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(dateStr));
                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                         
                         // YURT DIŞI / OVERSEAS exclusion
@@ -1403,7 +1509,7 @@
                         const isAnyDuty = isDuty || isPlannedDuty;
 
                         // Robust Date Parsing for strings like "2026-05-10 00:00"
-                        const datePart = String(tx.date || '').split(' ')[0];
+                        const datePart = dateStr;
                         const [y, mm, dd] = datePart.split('-').map(Number);
                         
                         if (isNaN(y) || isNaN(mm) || isNaN(dd)) return;
@@ -1436,9 +1542,9 @@
                                 let skip = false;
 
                                 if (isHolidayStandby) {
-                                    if (processedDays.HOLIDAY_STANDBY.has(dayKey)) skip = true;
+                                    if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
-                                        processedDays.HOLIDAY_STANDBY.add(dayKey);
+                                        processedDays.STANDBY.add(dayKey);
                                         points = 2.0; // Holiday Standby always 2h
                                     }
                                 } else if (isStandby) {
@@ -1449,7 +1555,7 @@
                                         else points = 1.0; // Normal standby 1h
                                     }
                                 } else if (isAnyDuty) {
-                                    const dayType = getDayType(curStr);
+                                    const dayType = tx.dayType || getDayType(curStr);
                                     const isWk = cur.getDay() === 0 || cur.getDay() === 6;
                                     const isInSeason = isPlannedDutySeason(curStr);
                                     const isThisPlanned = isPlannedDuty || (isAutoDuty && isInSeason);
@@ -1458,9 +1564,7 @@
                                         if (processedDays.PLANNED_DUTY.has(dayKey)) skip = true;
                                         else {
                                             processedDays.PLANNED_DUTY.add(dayKey);
-                                            if (processedDays.USED.has(dayKey)) {
-                                                points = 0;
-                                            } else if (!isAuto) {
+                                            if (!isAuto) {
                                                 points = hoursPerDay;
                                                 if (isWk) map[pid].plannedDutyWeekend.hours += points;
                                                 else map[pid].plannedDutyWeekday.hours += points;
@@ -1486,7 +1590,7 @@
 
                                 if (skip) continue;
 
-                                let dayType = getDayType(curStr);
+                                let dayType = tx.dayType || getDayType(curStr);
                                 map[pid].score += points;
 
                                 // Track notes for detail gains (e.g., Bayram, Muğla etc)
@@ -1503,8 +1607,8 @@
                                     // Handled above to differentiate Planned vs Unplanned
                                 } else {
                                     const dayStats = map[pid].breakdown[dayType] || { day: 0, night: 0 };
-                                    if (String(tx.shift).toUpperCase().includes('GECE')) dayStats.night += points;
-                                    else dayStats.day += points;
+                                    if (String(tx.shift).toUpperCase().includes('GECE')) dayStats.night += hoursPerDay;
+                                    else dayStats.day += hoursPerDay;
                                     map[pid].breakdown[dayType] = dayStats;
                                 }
                             }
@@ -1559,11 +1663,12 @@
                 } else if (modalType === 'use' && formData.date && formData.endDate) {
                     const parseLocalDateUTC = (dateStr) => {
                         if (!dateStr) return null;
-                        const parts = dateStr.split('-');
+                        const normalized = formatDateLocal(dateStr);
+                        const parts = normalized.split('-');
                         if (parts.length === 3) {
                             return new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0));
                         }
-                        return new Date(dateStr);
+                        return new Date(normalized);
                     };
                     const start = parseLocalDateUTC(formData.date);
                     const end = parseLocalDateUTC(formData.endDate);
@@ -1589,17 +1694,15 @@
             useEffect(() => {
                 if (formData.date) {
                     const newDayType = getDayType(formData.date);
-                    if (formData.dayType !== newDayType) {
-                        setFormData(prev => ({ ...prev, dayType: newDayType }));
-                    }
+                    setFormData(prev => ({ ...prev, dayType: newDayType }));
                 }
-            }, [formData.date, formData.dayType]);
+            }, [formData.date]);
 
             const handleLogin = (e) => {
                 e.preventDefault();
                 if ((loginData.username === 'ogm1' || loginData.username === 'ogm2') && loginData.password === '1839') {
                     setAdminRole(loginData.username);
-                    localStorage.setItem('ogm_admin_role', loginData.username);
+                    safeLocalStorageSetItem('ogm_admin_role', loginData.username);
                     setShowLogin(false);
                     setActiveTab('admin');
                 } else {
@@ -1690,7 +1793,7 @@
                     return;
                 }
 
-                const dayType = getDayType(formData.date);
+                const dayType = formData.dayType || getDayType(formData.date);
                 const isWk = (() => {
                     if (!formData.date) return false;
                     const [y, m, d] = formData.date.split(' ')[0].split('-').map(Number);
@@ -2039,6 +2142,8 @@
 
                     const pName = String(person.fullName || '').toLocaleUpperCase('tr-TR');
                     const pTitle = String(person.title || '').toLocaleUpperCase('tr-TR');
+                    const isSerkan = pName.includes('SERKAN KOTAN') || pName.includes('SERKAN KÖTEN');
+                    const isTechnical = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => pTitle.includes(t)) && !isSerkan;
 
                     // 1. App Title Row
                     worksheet.mergeCells('A1:G1');
@@ -2089,6 +2194,12 @@
                     worksheet.getCell('B7').value = `${totals.modalBalance.toFixed(1)} S (SAAT)`;
                     worksheet.getCell('C7').value = 'TOPLAM BEKLEME PUANI';
                     worksheet.getCell('D7').value = `${totals.modalNormalStandby + totals.modalHolidayStandby} Puan`;
+
+                    worksheet.getRow(8).height = 22;
+                    worksheet.getCell('A8').value = 'PLANSIZ MESAİ (PUANLI)';
+                    worksheet.getCell('B8').value = `${(totals.modalPlansizPuan || 0).toFixed(1)} PUAN`;
+                    worksheet.getCell('C8').value = 'PLANSIZ MESAİ DETAYI';
+                    worksheet.getCell('D8').value = `H.İçi: ${(totals.pWkday || 0).toFixed(1)} P, H.Sonu: ${(totals.pWkend || 0).toFixed(1)} P, Tatil: ${(totals.pHolid || 0).toFixed(1)} P`;
 
                     // Format Summary table
                     const sumLabelStyle = {
@@ -2161,6 +2272,29 @@
                         }
                     };
 
+                    const plansizLabelStyle = {
+                        ...sumLabelStyle,
+                        fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'E0F2FE' } },
+                        border: {
+                            top: { style: 'thin', color: { argb: 'BAE6FD' } },
+                            bottom: { style: 'thin', color: { argb: 'BAE6FD' } },
+                            left: { style: 'thin', color: { argb: 'BAE6FD' } },
+                            right: { style: 'thin', color: { argb: 'BAE6FD' } }
+                        }
+                    };
+
+                    const plansizValStyle = {
+                        ...sumValStyle,
+                        font: { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: '0369A1' } },
+                        fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'E0F2FE' } },
+                        border: {
+                            top: { style: 'thin', color: { argb: 'BAE6FD' } },
+                            bottom: { style: 'thin', color: { argb: 'BAE6FD' } },
+                            left: { style: 'thin', color: { argb: 'BAE6FD' } },
+                            right: { style: 'thin', color: { argb: 'BAE6FD' } }
+                        }
+                    };
+
                     // Apply Summary styles
                     worksheet.getCell('A5').style = sumLabelStyle;
                     worksheet.getCell('B5').style = sumValStyle;
@@ -2177,22 +2311,27 @@
                     worksheet.getCell('C7').style = { ...standbyLabelStyle, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F3E8FF' } } };
                     worksheet.getCell('D7').style = { ...standbyValStyle, font: { name:'Segoe UI', size:9.5, bold:true, color:{argb:'581C87'} }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F3E8FF' } } };
 
+                    worksheet.getCell('A8').style = plansizLabelStyle;
+                    worksheet.getCell('B8').style = plansizValStyle;
+                    worksheet.getCell('C8').style = plansizLabelStyle;
+                    worksheet.getCell('D8').style = plansizValStyle;
+
                     // 5. Spacing
                     worksheet.addRow([]);
-                    worksheet.getRow(8).height = 15;
+                    worksheet.getRow(9).height = 15;
 
                     // 6. Section 2 Table Header
-                    worksheet.mergeCells('A9:G9');
-                    const historyHeader = worksheet.getCell('A9');
+                    worksheet.mergeCells('A10:G10');
+                    const historyHeader = worksheet.getCell('A10');
                     historyHeader.value = 'DETAYLI İŞLEM GEÇMİŞİ VE HESAP DETAYLARI';
                     historyHeader.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: 'FFFFFF' } };
                     historyHeader.alignment = { vertical: 'middle', horizontal: 'center' };
                     historyHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '194B2E' } };
-                    worksheet.getRow(9).height = 24;
+                    worksheet.getRow(10).height = 24;
 
-                    // Row 10: Column headers
+                    // Row 11: Column headers
                     const colHeaders = ['TARİH', 'İŞLEM APARATI / DETAYI', 'AÇIKLAMA / NOT', 'TİP', 'DURUM', 'MESAİ SAATİ', 'BEKLEME PUANI'];
-                    const headerRow = worksheet.getRow(10);
+                    const headerRow = worksheet.getRow(11);
                     headerRow.height = 28;
                     colHeaders.forEach((h, colNum) => {
                         const cell = headerRow.getCell(colNum + 1);
@@ -2211,52 +2350,57 @@
                     // Formatting date helper
                     const fmtDate = (dateStr) => {
                         if (!dateStr) return '';
-                        const d = String(dateStr).split(' ')[0];
+                        const d = formatDateLocal(dateStr);
                         const parts = d.split('-');
-                        if (parts.length < 3) return dateStr;
+                        if (parts.length < 3) return d;
                         return `${parts[2]}-${parts[1]}-${parts[0]}`;
                     };
 
                     // Fill Transaction list
                     allItems.forEach((tx, idx) => {
-                        const rNum = 11 + idx;
+                        const rNum = 12 + idx;
                         const row = worksheet.getRow(rNum);
                         row.height = 26;
 
                         const txId = String(tx.id || tx.ID || '').toLowerCase();
-                        const descUpper = String(tx.description || '').toLocaleUpperCase('tr-TR');
-                        const isAuto = txId.startsWith('auto-') || txId.includes('sync');
+                        const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                         
-                        const dayType = getDayType(tx.date);
+                        const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                         
                         const hasBeklemeInText = txId.includes('standby') || descUpper.includes('BEKLEME');
                         const isExplicitHolidayStandby = descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby');
-                        const isHolidayStandby = hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby);
-                        const isStandby = hasBeklemeInText && !isHolidayStandby;
-                        const isPlannedDuty = txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV');
-                        const isFmi = descUpper.includes('FMİ') || descUpper.includes('FMI') || descUpper.includes('F.M.İ') || txId.includes('fmi');
-                        const isEarned = tx.type === TRANSACTION_TYPES.EARNED;
-                        const isPending = tx.status === 'PENDING';
-
-                        let hours = parseFloat(tx.displayHours || tx.hours || (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0));
-                        if (isAuto) {
-                            if (isPlannedDuty) {
-                                const isWk = (() => {
-                                     if (!tx.date) return false;
-                                     const [y, m, d] = tx.date.split(' ')[0].split('-').map(Number);
-                                     const dt = new Date(y, m - 1, d);
-                                     return dt.getDay() === 0 || dt.getDay() === 6;
-                                 })();
-                                 hours = isWk ? 11.0 : 3.0;
-                            } else if (isHolidayStandby) {
-                                hours = 2.0;
-                            } else if (isStandby) {
-                                hours = 1.0;
-                            } else if (isFmi) {
-                                hours = 8.0;
-                            }
-                        }
+                        const isHolidayStandby = tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby));
+                        const isStandby = tx.isStandby !== undefined ? tx.isStandby : (hasBeklemeInText && !isHolidayStandby);
+                         const isPlannedDuty = txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV') || descUpper.includes('GÖREV MESAİSİ');
+                         const isFmi = descUpper.includes('FMİ') || descUpper.includes('FMI') || descUpper.includes('F.M.İ') || txId.includes('fmi');
+                         const isDuty = (txId.includes('duty') || descUpper.includes('GÖREV') || descUpper.includes('GOREV')) && !isStandby && !isHolidayStandby && !isPlannedDuty;
+                         const isEarned = tx.type === TRANSACTION_TYPES.EARNED || isStandby || isHolidayStandby || isPlannedDuty;
+                         const isPending = tx.status === 'PENDING';
+                         
+                         const isAuto = txId.startsWith('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+ 
+                         let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
+                         if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
+                             if (isPlannedDuty) {
+                                 const isWk = (() => {
+                                      if (!tx.date) return false;
+                                      const datePart = formatDateLocal(tx.date);
+                                      const [y, m, d] = datePart.split('-').map(Number);
+                                      const dt = new Date(y, m - 1, d);
+                                      return dt.getDay() === 0 || dt.getDay() === 6;
+                                  })();
+                                  hours = isWk ? 11.0 : 3.0;
+                             } else if (isHolidayStandby) {
+                                 hours = 2.0;
+                             } else if (isStandby) {
+                                 hours = 1.0;
+                             } else if (isFmi) {
+                                 hours = 8.0;
+                             }
+                         } else if (isDuty) {
+                             hours = hours * getMultiplier(dayType, isTechnical);
+                         }
 
                         row.getCell(1).value = fmtDate(tx.date);
                         row.getCell(2).value = tx.shift ? `${tx.shift} Vardiyası` : (isAuto ? 'Otomatik Entegrasyon' : 'Manuel Kayıt');
@@ -2603,7 +2747,7 @@
 
                 try {
                     setLoading(true);
-                    await apiCall('approve_overtime', { id });
+                    await apiCall('approve_overtime', { id, transaction: tx });
                     setTransactions(transactions.map(tx => tx.id === id ? { ...tx, status: 'APPROVED' } : tx));
                     showToast("Gözden geçirildi. İzin yönetim bölümüne gönderildi.");
                 } catch (err) {
@@ -2652,7 +2796,7 @@
                     if (seenAlerts.length > 1000) {
                         seenAlerts.splice(0, seenAlerts.length - 1000);
                     }
-                    localStorage.setItem('ogm_seen_alerts', JSON.stringify(seenAlerts));
+                    safeLocalStorageSetItem('ogm_seen_alerts', JSON.stringify(seenAlerts));
                 }
                 setUpdateNotice(null);
             };
@@ -2681,7 +2825,7 @@
             }, [attendanceRecords]);
 
             useEffect(() => {
-                if (loading || !transactions.length || !attendanceRecords.length) return;
+                if (loading || !transactions.length || !attendanceRecords.length || autoApprovingRef.current) return;
                 
                 const pendingUsedWithAttendance = transactions.filter(tx => {
                     if (tx.status !== 'PENDING' || tx.type !== TRANSACTION_TYPES.USED) return false;
@@ -2690,9 +2834,10 @@
                 
                 if (pendingUsedWithAttendance.length > 0) {
                     const autoApprove = async () => {
+                        autoApprovingRef.current = true;
                         try {
                             for (const tx of pendingUsedWithAttendance) {
-                                await apiCall('approve_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL);
+                                await apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL);
                             }
                             setTransactions(prev => prev.map(t => {
                                 const shouldApprove = pendingUsedWithAttendance.some(x => x.id === t.id);
@@ -2701,6 +2846,8 @@
                             showToast("Sistemde eşleşen izin talepleri otomatik onaylandı.");
                         } catch (e) {
                             console.error("Auto approval failed", e);
+                        } finally {
+                            autoApprovingRef.current = false;
                         }
                     };
                     autoApprove();
@@ -2723,7 +2870,7 @@
                     };
 
                     // Açıklamayı güncelle
-                    const baseDesc = tx.description || (tx.isGorevSync ? 'PLANLI GÖREV' : (tx.isStandbySync ? 'BEKLEME' : 'FAZLA MESAİ'));
+                    const baseDesc = tx.description || tx.DESCRIPTION || (tx.isGorevSync ? 'PLANLI GÖREV' : (tx.isStandbySync ? 'BEKLEME' : 'FAZLA MESAİ'));
                     if (newNote !== undefined) {
                         // Eğer zaten parantez içinde bir açıklama varsa onu temizleyip yenisini ekle veya sonuna ekle
                         const cleanDesc = baseDesc.split(' (')[0].split(' [GÜNCELLENDİ]')[0];
@@ -2893,7 +3040,7 @@
                                             };
                                             const updatedRecords = [...otherRecords, newRecord];
                                             setAttendanceRecords(updatedRecords);
-                                            localStorage.setItem('ogm_attendance', JSON.stringify(updatedRecords));
+                                            safeLocalStorageSetItem('ogm_attendance', JSON.stringify(updatedRecords));
 
                                             try {
                                                 await apiCall('save_attendance', { record: newRecord, records: [newRecord] }, PERSONNEL_SCRIPT_URL);
@@ -3125,7 +3272,7 @@
                                                     <td className="px-4 py-4 text-forest-500 text-xs text-center whitespace-nowrap">
                                                         {tx.startTime && tx.endTime ? `${tx.startTime} - ${tx.endTime}` : '-'}
                                                     </td>
-                                                    <td className="px-4 py-4 italic text-forest-400 max-w-xs truncate">{tx.description || '-'}</td>
+                                                    <td className="px-4 py-4 italic text-forest-400 max-w-xs truncate">{tx.description || tx.DESCRIPTION || '-'}</td>
                                                     <td className="px-4 py-4">
                                                         <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${tx.status === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-400' : tx.status === 'PENDING' ? 'bg-amber-500/20 text-amber-500' : 'bg-rose-500/20 text-rose-500'}`}>
                                                             {tx.status === 'APPROVED' ? 'Onaylandı' : tx.status === 'PENDING' ? 'Beklemede' : tx.status}
@@ -3139,7 +3286,7 @@
                                                                         showConfirm('Bu işlemi onaylamak istiyor musunuz?', async () => {
                                                                             try {
                                                                                 setLoading(true);
-                                                                                await apiCall('approve_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL);
+                                                                                await apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL);
                                                                                 setTransactions(transactions.map(t => t.id === tx.id ? { ...t, status: 'APPROVED', approvedAt: new Date().toISOString() } : t));
                                                                                 showToast("İşlem onaylandı.");
                                                                             } catch (e) {
@@ -3236,8 +3383,8 @@
                                                             <td className="px-4 py-4 font-black text-center text-xs">
                                                                 {tx.type === TRANSACTION_TYPES.USED ? `${tx.days || 1} Gün` : `${tx.hours || 0} Saat`}
                                                             </td>
-                                                            <td className="px-4 py-4 text-xs italic text-forest-400 max-w-xs truncate" title={tx.description}>
-                                                                {tx.description || '-'}
+                                                            <td className="px-4 py-4 text-xs italic text-forest-400 max-w-xs truncate" title={tx.description || tx.DESCRIPTION || ''}>
+                                                                {tx.description || tx.DESCRIPTION || '-'}
                                                             </td>
                                                             <td className="px-4 py-4 text-right">
                                                                 <div className="flex items-center justify-end gap-2">
@@ -3247,7 +3394,7 @@
                                                                                 showConfirm('Bu talebi onaylayıp Yoklama Aktar sayfasına ve personele işlemek istiyor musunuz?', async () => {
                                                                                     try {
                                                                                         setLoading(true);
-                                                                                        await apiCall('approve_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL);
+                                                                                        await apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL);
                                                                                         setTransactions(prev => prev.map(t => t.id === tx.id ? { ...t, status: 'APPROVED' } : t));
                                                                                         showToast("Talep onaylandı ve Yoklama Aktar listesine yazıldı.");
                                                                                         await refreshData();
@@ -3623,15 +3770,7 @@
                             <div className="space-y-6">
                                 {(() => {
                                     const normalizeId = (id) => String(id || '').trim().toLowerCase();
-                                    const normalizeDateSimple = (d) => {
-                                        if (!d) return '';
-                                        let s = String(d).trim();
-                                        if (s.includes('.')) {
-                                            const parts = s.split(' ')[0].split('.');
-                                            if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
-                                        }
-                                        return s.split(/[T ]/)[0];
-                                    };
+                                    const normalizeDateSimple = (d) => formatDateLocal(d);
 
                                     const targetPid = normalizeId(selectedPerson?.id);
                                     const targetName = String(selectedPerson?.fullName || '').toLocaleUpperCase('tr-TR');
@@ -3640,7 +3779,7 @@
                                         .filter(tx => {
                                             const pid = normalizeId(tx.personId);
                                             const dateStr = normalizeDateSimple(tx.date);
-                                            const descUpper = String(tx.description || '').toLocaleUpperCase('tr-TR');
+                                            const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                                             const txLoc = String(tx.location || tx.DUTY_LOC || '').toLocaleUpperCase('tr-TR');
                                             const txNote = String(tx.note || '').toLocaleUpperCase('tr-TR');
                                             
@@ -3705,7 +3844,7 @@
                                         const dateStr = normalizeDateSimple(r.date);
                                         return !combined.some(tx => {
                                             const d = normalizeDateSimple(tx.date);
-                                            const desc = String(tx.description || '').toLocaleUpperCase('tr-TR');
+                                            const desc = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                                             const id = String(tx.id || tx.ID || '').toLowerCase();
                                             // Check for any duty on this day (auto or manual)
                                             return d === dateStr && (id.includes('duty') || desc.includes('GÖREV') || desc.includes('GOREV'));
@@ -3756,7 +3895,7 @@
                                         return !combined.some(tx => {
                                             const d = normalizeDateSimple(tx.date);
                                             const id = String(tx.id || tx.ID || '').toLowerCase();
-                                            const desc = String(tx.description || '').toLocaleUpperCase('tr-TR');
+                                            const desc = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                                             // Check for any standby on this day (auto or manual)
                                             return d === dateStr && (id.includes('standby') || desc.includes('BEKLEME'));
                                         });
@@ -3780,30 +3919,50 @@
 
                                     const rawItems = [...combined, ...fmiDeductions, ...gorevSyncs, ...standbySyncs];
                                     
-                                    // Priority deduplication per day
-                                    const seen = new Map();
-                                    rawItems.forEach(item => {
-                                        const d = String(item.date).split(' ')[0];
-                                        const existing = seen.get(d);
-                                        
-                                        const txId = String(item.id || item.ID || '').toLowerCase();
-                                        const isManualOverride = txId.startsWith('manual-override');
-                                        const isAuto = txId.startsWith('auto-') || txId.includes('sync') || item.isFmi || item.isGorevSync || item.isStandbySync;
-                                        
-                                        if (!existing) {
-                                            seen.set(d, item);
-                                        } else {
-                                            const exId = String(existing.id || existing.ID || '').toLowerCase();
-                                            const existingIsManual = exId.startsWith('manual-override');
-                                            const existingIsAuto = exId.startsWith('auto-') || exId.includes('sync') || existing.isFmi || existing.isGorevSync || existing.isStandbySync;
-                                            
-                                            if (isManualOverride) {
-                                                seen.set(d, item);
-                                            } else if (!isAuto && existingIsAuto) {
-                                                seen.set(d, item);
-                                            }
-                                        }
-                                    });
+                                    // Priority deduplication per day and category
+                                     const seen = new Map();
+                                     rawItems.forEach(item => {
+                                         const d = String(item.date).split(' ')[0];
+                                         const descUpper = String(item.description || item.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                                         const txId = String(item.id || item.ID || '').toLowerCase();
+                                         
+                                         let category = 'OTHER';
+                                         const hasBeklemeInText = txId.includes('standby') || descUpper.includes('BEKLEME');
+                                         const isHolidayDate = getDayType(d) === DAY_TYPES.HOLIDAY;
+                                         const isExplicitHolidayStandby = descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby');
+                                         const isHolidayStandby = item.isHolidayStandby !== undefined ? item.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby));
+                                         const isStandby = item.isStandby !== undefined ? item.isStandby : (hasBeklemeInText && !isHolidayStandby);
+                                         const isPlannedDuty = txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV') || descUpper.includes('GÖREV MESAİSİ');
+                                         const isFmi = descUpper.includes('FMİ') || descUpper.includes('FMI') || descUpper.includes('F.M.İ') || txId.includes('fmi') || item.isFmi;
+                                         const isDuty = (txId.includes('duty') || descUpper.includes('GÖREV') || descUpper.includes('GOREV')) && !isStandby && !isHolidayStandby && !isPlannedDuty;
+
+                                         if (isHolidayStandby) category = 'HOLIDAY_STANDBY';
+                                         else if (isStandby) category = 'STANDBY';
+                                         else if (isPlannedDuty) category = 'PLANNED_DUTY';
+                                         else if (isDuty) category = 'DUTY';
+                                         else if (isFmi) category = 'FMI';
+                                         else if (item.type === TRANSACTION_TYPES.USED) category = 'USED';
+
+                                         const key = d + '_' + category;
+                                         const existing = seen.get(key);
+                                         
+                                         const isManualOverride = txId.startsWith('manual-override');
+                                         const isAuto = txId.startsWith('auto-') || txId.includes('sync') || item.isFmi || item.isGorevSync || item.isStandbySync;
+                                         
+                                         if (!existing) {
+                                             seen.set(key, item);
+                                         } else {
+                                             const exId = String(existing.id || existing.ID || '').toLowerCase();
+                                             const existingIsManual = exId.startsWith('manual-override');
+                                             const existingIsAuto = exId.startsWith('auto-') || exId.includes('sync') || existing.isFmi || existing.isGorevSync || existing.isStandbySync;
+                                             
+                                             if (isManualOverride) {
+                                                 seen.set(key, item);
+                                             } else if (!isAuto && existingIsAuto) {
+                                                 seen.set(key, item);
+                                             }
+                                         }
+                                     });
 
                                     const allItems = Array.from(seen.values())
                                         .sort((a, b) => {
@@ -3833,10 +3992,24 @@
                                     const modalHolidayStandby = targetStats.holidayStandby;
                                     const modalNotesBreakdown = targetStats.notesBreakdown || {};
 
+                                    const pName = String(selectedPerson.fullName || '').toLocaleUpperCase('tr-TR');
+                                    const pTitle = String(selectedPerson.title || '').toLocaleUpperCase('tr-TR');
+                                    const isSerkan = pName.includes('SERKAN KOTAN') || pName.includes('SERKAN KÖTEN');
+                                    const isTech = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => pTitle.includes(t)) && !isSerkan;
+
+                                    const wkdayData = targetStats.breakdown?.[DAY_TYPES.WEEKDAY] || { day: 0, night: 0 };
+                                    const wkendData = targetStats.breakdown?.[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
+                                    const holidData = targetStats.breakdown?.[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
+                                    
+                                    const pWkday = (wkdayData.day + wkdayData.night) * getMultiplier(DAY_TYPES.WEEKDAY, isTech);
+                                    const pWkend = (wkendData.day + wkendData.night) * getMultiplier(DAY_TYPES.WEEKEND, isTech);
+                                    const pHolid = (holidData.day + holidData.night) * getMultiplier(DAY_TYPES.HOLIDAY, isTech);
+                                    const totalPlansizPuan = pWkday + pWkend + pHolid;
+
                                     return (
                                         <>
                                             {/* Summary Stats */}
-                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                                                 <div className="bg-blue-500/10 border border-blue-500/20 p-4 rounded-2xl">
                                                     <p className="text-[10px] font-black text-blue-400 uppercase mb-1">Toplam Kazanım</p>
                                                     <p className="text-xl font-black text-white">{modalEarned} SAAT</p>
@@ -3847,6 +4020,26 @@
                                                                 <span>+{hrs}s</span>
                                                             </div>
                                                         ))}
+                                                    </div>
+                                                </div>
+                                                <div className="bg-teal-500/10 border border-teal-500/20 p-4 rounded-2xl flex flex-col justify-between">
+                                                    <div>
+                                                        <p className="text-[10px] font-black text-teal-400 uppercase mb-2">Plansız Mesailer (Puanlı)</p>
+                                                        <p className="text-xl font-black text-white">{totalPlansizPuan.toFixed(1)} PUAN</p>
+                                                    </div>
+                                                    <div className="mt-2 pt-2 border-t border-teal-500/10 space-y-1.5 text-[10px] font-bold text-teal-300">
+                                                        <div className="flex justify-between items-center bg-teal-950/20 px-2.5 py-1 rounded border border-teal-900/10">
+                                                            <span>Hafta İçi (1.0x):</span>
+                                                            <span className="text-white font-black bg-teal-900/40 px-1.5 py-0.2 rounded">{pWkday.toFixed(1)} P</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center bg-teal-950/20 px-2.5 py-1 rounded border border-teal-900/10">
+                                                            <span>Hafta Sonu ({isTech ? '1.5x' : '1.0x'}):</span>
+                                                            <span className="text-white font-black bg-emerald-900/40 px-1.5 py-0.2 rounded">{pWkend.toFixed(1)} P</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center bg-teal-950/20 px-2.5 py-1 rounded border border-teal-900/10">
+                                                            <span>Resmi Tatil ({isTech ? '2.0x' : '1.0x'}):</span>
+                                                            <span className="text-white font-black bg-cyan-900/40 px-1.5 py-0.2 rounded">{pHolid.toFixed(1)} P</span>
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <div className="bg-purple-500/10 border border-purple-500/20 p-4 rounded-2xl flex flex-col justify-between">
@@ -3882,7 +4075,7 @@
                                                         <Icon name="History" size={14} /> İşlem Detayları
                                                     </h4>
                                                     <button 
-                                                        onClick={() => exportIndividualExcel(selectedPerson, allItems, { modalEarned, modalNormalStandby, modalHolidayStandby, modalUsed, modalBalance })}
+                                                        onClick={() => exportIndividualExcel(selectedPerson, allItems, { modalEarned, modalNormalStandby, modalHolidayStandby, modalUsed, modalBalance, modalPlansizPuan: totalPlansizPuan, pWkday, pWkend, pHolid })}
                                                         type="button"
                                                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-2xs sm:text-xs font-bold transition-all flex items-center gap-1.5 shadow-md hover:scale-[1.02] cursor-pointer"
                                                         title="Tasarımı Bozmadan Bu Personelin Detaylı Dökümünü Excel (.xlsx) İndir"
@@ -3899,23 +4092,24 @@
                                                     </div>
                                                 ) : (
                                                     allItems.map(tx => {
-                                            const txId = String(tx.id || tx.ID || '').toLowerCase();
-                                            const descUpper = String(tx.description || '').toLocaleUpperCase('tr-TR');
-                                            const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync');
+                                                        const txId = String(tx.id || tx.ID || '').toLowerCase();
+                                            const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                                             
-                                            const dayType = getDayType(tx.date);
+                                            const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                                             const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                                             
                                             const hasBeklemeInText = txId.includes('standby') || descUpper.includes('BEKLEME');
                                             const isExplicitHolidayStandby = descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby');
                                             const isHolidayStandby = hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby);
                                             const isStandby = hasBeklemeInText && !isHolidayStandby;
-                                            const isPlannedDuty = txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV');
+                                            const isPlannedDuty = txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV') || descUpper.includes('GÖREV MESAİSİ');
                                             const isDuty = (txId.includes('duty') || descUpper.includes('GÖREV') || descUpper.includes('GOREV')) && !isStandby && !isHolidayStandby && !isPlannedDuty;
                                             const isFmi = descUpper.includes('FMİ') || descUpper.includes('FMI') || descUpper.includes('F.M.İ') || txId.includes('fmi');
                                             
-                                            const isEarned = tx.type === TRANSACTION_TYPES.EARNED;
+                                            const isEarned = tx.type === TRANSACTION_TYPES.EARNED || isStandby || isHolidayStandby || isPlannedDuty;
                                             const isPending = tx.status === 'PENDING';
+                                            
+                                            const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
 
                                             const formatDate = (dateStr) => {
                                                 if (!dateStr) return '';
@@ -3925,13 +4119,14 @@
                                                 return `${parts[2]}-${parts[1]}-${parts[0]}`;
                                             };
 
-                                            let hours = parseFloat(tx.displayHours || tx.hours || (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0));
+                                            let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
                                             
-                                            if (isAuto) {
+                                            if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
                                                 if (isPlannedDuty) {
                                                     const isWk = (() => {
                                                          if (!tx.date) return false;
-                                                         const [y, m, d] = tx.date.split(' ')[0].split('-').map(Number);
+                                                         const datePart = formatDateLocal(tx.date);
+                                                          const [y, m, d] = datePart.split('-').map(Number);
                                                          const dt = new Date(y, m - 1, d);
                                                          return dt.getDay() === 0 || dt.getDay() === 6;
                                                      })();
@@ -3944,7 +4139,6 @@
                                                     hours = 8.0;
                                                 }
                                             }
-
                                             return (
                                                 <div 
                                                     key={tx.id} 
@@ -3961,7 +4155,7 @@
                                                         <div className="min-w-0 flex-1">
                                                             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-1">
                                                                 <p className="font-black text-white text-xs sm:text-sm uppercase truncate">
-                                                                    {tx.description || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
+                                                                    {tx.description || tx.DESCRIPTION || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
                                                                 </p>
                                                                 {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">RESMİ TATİL (+2)</span>}
                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">BEKLEME (+1)</span>}
@@ -4127,7 +4321,7 @@
                                             <div className="max-h-48 overflow-y-auto bg-forest-950/50 rounded-xl p-1 space-y-1 mb-1 border border-forest-800/30">
                                                 {displayPersonnel
                                                     .filter(p => isPersonnelInGroup(p, adminRole))
-                                                    .filter(p => p.fullName.toLocaleUpperCase('tr-TR').includes(searchTerm.toLocaleUpperCase('tr-TR')))
+                                                    .filter(p => (p.fullName || '').toLocaleUpperCase('tr-TR').includes((searchTerm || '').toLocaleUpperCase('tr-TR')))
                                                     .slice(0, 10)
                                                     .map(p => (
                                                         <button
@@ -4135,7 +4329,7 @@
                                                             type="button"
                                                             onClick={() => {
                                                                 setFormData({...formData, personId: p.id});
-                                                                setSearchTerm(p.fullName);
+                                                                setSearchTerm(p.fullName || '');
                                                             }}
                                                             className={`w-full text-left px-4 py-3 rounded-lg text-sm transition-all flex items-center justify-between group ${formData.personId === p.id ? 'bg-forest-600 text-white shadow-lg' : 'text-forest-400 hover:bg-forest-800 hover:text-forest-200'}`}
                                                         >

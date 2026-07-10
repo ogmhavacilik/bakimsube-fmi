@@ -201,7 +201,12 @@ function handleGetInitData() {
         headers.forEach((h, i) => {
           let val = row[i];
           if (val instanceof Date) {
-            val = Utilities.formatDate(val, "GMT+3", "yyyy-MM-dd HH:mm");
+            const yr = val.getFullYear();
+            const mo = String(val.getMonth() + 1);
+            const dy = String(val.getDate());
+            const hr = String(val.getHours());
+            const mn = String(val.getMinutes());
+            val = yr + "-" + (mo.length < 2 ? '0' + mo : mo) + "-" + (dy.length < 2 ? '0' + dy : dy) + " " + (hr.length < 2 ? '0' + hr : hr) + ":" + (mn.length < 2 ? '0' + mn : mn);
           }
           obj[h] = val;
         });
@@ -249,7 +254,12 @@ function handleGetInitData() {
             headers.forEach((h, i) => {
               let val = row[i];
               if (val instanceof Date) {
-                val = Utilities.formatDate(val, "GMT+3", "yyyy-MM-dd HH:mm");
+                const yr = val.getFullYear();
+                const mo = String(val.getMonth() + 1);
+                const dy = String(val.getDate());
+                const hr = String(val.getHours());
+                const mn = String(val.getMinutes());
+                val = yr + "-" + (mo.length < 2 ? '0' + mo : mo) + "-" + (dy.length < 2 ? '0' + dy : dy) + " " + (hr.length < 2 ? '0' + hr : hr) + ":" + (mn.length < 2 ? '0' + mn : mn);
               }
               obj[h] = val;
             });
@@ -348,7 +358,13 @@ function handleApproveOvertime(payload) {
             case "HOURS": return tx.hours;
             case "TYPE": return tx.type;
             case "SHIFT": return tx.shift || 'Gündüz';
-            case "DAYTYPE": return tx.dayType;
+            case "DAYTYPE":
+            case "DAY_TYPE":
+            case "GUN_TIPI":
+            case "GÜN_TİPİ":
+            case "GUN TIPI":
+            case "GÜN TİPİ":
+              return tx.dayType || getProp(tx, "dayType") || "";
             case "DESCRIPTION": return tx.description;
             case "NOTE": return tx.note || "";
             case "STATUS": return "APPROVED";
@@ -398,9 +414,38 @@ function handleApproveOvertime(payload) {
           }
           
           if (pTxIdx !== -1) {
-            const pStatusColIdx = pHeaders.indexOf("STATUS") + 1;
-            if (pStatusColIdx > 0) {
-              plansizSheet.getRange(pTxIdx, pStatusColIdx).setValue("APPROVED");
+            const tx = payload.transaction;
+            if (tx) {
+              const row = pHeaders.map((h, idx) => {
+                switch(h) {
+                  case "ID": return tx.id;
+                  case "PERSONID": case "PID": return tx.personId;
+                  case "PERSONNAME": return tx.personName;
+                  case "DATE": case "TARİH": return tx.date;
+                  case "ENDDATE": return tx.endDate || tx.date;
+                  case "DAYS": return tx.days || 1;
+                  case "HOURS": return tx.hours;
+                  case "TYPE": return tx.type;
+                  case "SHIFT": return tx.shift || 'Gündüz';
+                  case "DAYTYPE":
+                  case "DAY_TYPE":
+                  case "GUN_TIPI":
+                  case "GÜN_TİPİ":
+                  case "GUN TIPI":
+                  case "GÜN TİPİ":
+                    return tx.dayType || getProp(tx, "dayType") || "";
+                  case "DESCRIPTION": return tx.description;
+                  case "STATUS": return "APPROVED";
+                  case "TIMESTAMP": return pData[pTxIdx-1][idx];
+                  default: return pData[pTxIdx-1][idx];
+                }
+              });
+              plansizSheet.getRange(pTxIdx, 1, 1, row.length).setValues([row]);
+            } else {
+              const pStatusColIdx = pHeaders.indexOf("STATUS") + 1;
+              if (pStatusColIdx > 0) {
+                plansizSheet.getRange(pTxIdx, pStatusColIdx).setValue("APPROVED");
+              }
             }
             
             const pRow = plansizSheet.getRange(pTxIdx, 1, 1, pHeaders.length).getValues()[0];
@@ -490,6 +535,17 @@ function writeToAttendance(tx) {
 
   if (!pid || !dateVal) return;
 
+  const typeValue = String(getProp(tx, "type") || getProp(tx, "tip") || "").toUpperCase();
+  const desc = String(getProp(tx, "description") || getProp(tx, "note") || "").toUpperCase();
+
+  // BİR FMİ GİRİŞİNDE (KAZANIM) ASLA VE ASLA YOKLAMAYA AKTARMA YOK. SADECE KULLANILAN FMİ İZNİ (USED) AKTARILACAK.
+  const isFmi = desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ') || String(getProp(tx, "id") || "").toLowerCase().includes("fmi");
+  const isEarned = typeValue === "EARNED" || typeValue.includes("KAZANIM") || typeValue.includes("ÖDEME");
+  if (isFmi && isEarned) {
+    console.log("FMI Girişi (Earned) yoklamaya aktarılmayacak: " + pid + " " + dateVal);
+    return;
+  }
+
   // Clean up any existing attendance rows for this person during this date range first
   deleteFromAttendanceByDate(pid, dateVal, daysVal);
 
@@ -510,9 +566,6 @@ function writeToAttendance(tx) {
   const mainDb = getMainDb();
   
   const s1 = getSheetSafely(mainDb, ["YOKLAMA AKTAR", "Yoklama", "YOKLAMA", "ATTENDANCE"]);
-
-  const typeValue = String(getProp(tx, "type") || getProp(tx, "tip") || "").toUpperCase();
-  const desc = String(getProp(tx, "description") || getProp(tx, "note") || "").toUpperCase();
 
   for (let i = 0; i < days; i++) {
     const cur = new Date(year, month, day + i, 12, 0, 0);
@@ -681,194 +734,51 @@ function syncAutoTransactions(hasLock) {
   if (!hasLock) {
     lockObj = LockService.getScriptLock();
     try {
-      lockObj.waitLock(15000);
+      lockObj.waitLock(10000);
     } catch (e) {
       console.warn("Could not acquire lock for syncAutoTransactions: " + e.message);
-      throw new Error("Sistem şu anda meşgul (Kilit Aşımı). Lütfen az sonra tekrar deneyin.");
+      return { success: true, message: "Kilit alınamadı, işlem atlandı." };
     }
   }
   try {
-    const initData = handleGetInitData();
     const mainDb = getMainDb();
     const txSheet = getSheetSafely(mainDb, ["İşlemler", "Islemler", "Mesailer"]);
     const txData = txSheet.getDataRange().getValues();
-    const headers = txData[0].map(h => String(h).trim().toUpperCase());
-    
-    // NEW: Ensure we have "DATE_L" in the 12th column (index 11 / Column L)
-    while (headers.length < 12) {
-      headers.push("");
+    if (txData.length <= 1) {
+      return { success: true, message: "Tablo boş." };
     }
-    const hadDateL = headers.indexOf("DATE_L");
-    if (hadDateL === -1) {
-      if (txSheet.getLastColumn() < 12) {
-        txSheet.getRange(1, 12).setValue("DATE_L");
-      }
-      headers[11] = "DATE_L";
+    
+    const headers = txData[0].map(h => String(h).trim().toUpperCase());
+    const idColIdx = headers.indexOf("ID");
+    if (idColIdx === -1) {
+      return { success: true, message: "ID sütunu bulunamadı." };
     }
 
-    const idColIdx = headers.indexOf("ID");
-    
-    // 1. Separate manual (user entered) rows and keep them intact
+    // Tabloda eski otomatik kayıtlar (auto- ile başlayan) var mı diye kontrol edelim
+    let hasAutoRows = false;
     const manualRows = [];
     txData.forEach((row, i) => {
-      if (i === 0) return; // Header
-      const id = String(row[idColIdx] || "").trim();
-      if (!id.toLowerCase().startsWith("auto-")) {
-        // Ensure manual rows also span 12 columns
-        const tempRow = [...row];
-        while (tempRow.length < headers.length) {
-          tempRow.push("");
-        }
-        manualRows.push(tempRow);
+      if (i === 0) return; // Başlık satırını atla
+      const id = String(row[idColIdx] || "").trim().toLowerCase();
+      if (id.startsWith("auto-")) {
+        hasAutoRows = true;
+      } else {
+        manualRows.push(row);
       }
     });
 
-    const manualRecords = new Set();
-    manualRows.forEach(row => {
-      const pidCol = headers.indexOf("PERSONID") === -1 ? headers.indexOf("PID") : headers.indexOf("PERSONID");
-      const dateCol = headers.indexOf("DATE") === -1 ? headers.indexOf("TARIH") : headers.indexOf("DATE");
-      const pid = String(row[pidCol] || "").trim();
-      const dateStr = normalizeDateStrGS(row[dateCol]);
-      if (pid && dateStr) {
-        manualRecords.add(`${pid}_${dateStr}`);
+    // Eğer tabloda otomatik kayıtlar varsa, onları temizleyip sadece manuel kayıtları yazalım
+    if (hasAutoRows) {
+      if (txSheet.getLastRow() > 1) {
+        txSheet.getRange(2, 1, txSheet.getLastRow() - 1, txSheet.getLastColumn()).clearContent();
       }
-    });
-
-    // 2. Identify and group all 2026 season attendance records
-    const groupedAttendance = {};
-    initData.attendance.forEach(att => {
-      const pid = String(getValGS(att, ['PERSON_ID', 'PERSONNEL_ID', 'PID', 'KİŞİ ID', 'KISI ID'])).trim();
-      const dateStr = normalizeDateStrGS(getValGS(att, ['DATE', 'TARİH', 'TARIH']));
-      if (!pid || !dateStr) return;
-      
-      // SEASON AND YEAR FILTER (Only 2026 and starting May 1st)
-      if (!isStandbyDateGS(dateStr)) return;
-
-      const key = `${pid}_${dateStr}`;
-      if (!groupedAttendance[key]) groupedAttendance[key] = [];
-      groupedAttendance[key].push(att);
-    });
-
-    const desiredAutoTxs = {};
-    Object.keys(groupedAttendance).forEach(key => {
-      const atts = groupedAttendance[key];
-      const [pid, dateStr] = key.split('_');
-      if (manualRecords.has(`${pid}_${dateStr}`)) return; // Skip if manually overridden
-
-      let bestAutoType = null;
-      let bestHours = 0;
-      let bestDesc = "";
-      
-      const containsFmi = (str) => {
-        if (!str) return false;
-        const s = String(str).toUpperCase('tr-TR').replace(/\./g, '');
-        return s.includes('FMI') || s.includes('FMİ');
-      };
-
-      atts.forEach(att => {
-        const status = getValGS(att, ['STATUS', 'DURUM', 'DUTY_TYPE', 'GOREV_TIPI']).toUpperCase('tr-TR');
-        const note = getValGS(att, ['NOTE', 'ACIKLAMA', 'DESCRIPTION', 'NOT', 'ACIKLAMASI', 'NOTLAR', 'NOT/AÇIKLAMA']).toUpperCase('tr-TR');
-        const loc = getValGS(att, ['DUTY_LOC', 'DUTY_LOCAT', 'DUTY_LOCATION', 'GOREV_YERI', 'LOCATION', 'YER']).toUpperCase('tr-TR');
-        const type = getValGS(att, ['DUTY_TYPE', 'GOREV_TIPI', 'DURUM_TIPI']).toUpperCase('tr-TR');
-        const leave = getValGS(att, ['LEAVE_TYPE', 'LEAVE_TYI', 'IZIN_TIPI', 'G_SUTUNU', 'İZİN TÜRÜ', 'IZIN TURU', 'IZIN_TIPI']).toUpperCase('tr-TR');
-        
-        const isCancelled = note.includes('İPTAL') || note.includes('IPTAL');
-        if (isCancelled) return;
-
-        const isStatusIzin = status === 'İZİN' || status === 'IZIN';
-        const isLeaveFmi = containsFmi(leave);
-        const isFmi = isStatusIzin && isLeaveFmi;
-        
-        const isStandby = (status.includes('BEKLEME') || note.includes('BEKLEME') || loc.includes('BEKLEME')) && !isFmi;
-        
-        const isPlanned = type.includes('PLANLI') || type === '';
-        const isInternational = isOverseasGS(loc, note, status);
-        const isExcluded = status.includes('İZİN') || status.includes('IZIN') || status.includes('RAPOR') || status.includes('İSTİRAHAT');
-        
-        const isDuty = (status.includes('GÖREV') || status.includes('GOREV')) && !isStandby && !isFmi && !isInternational && !isExcluded && isPlanned;
-
-        if (isFmi) {
-          bestAutoType = "AUTO_FMI";
-          bestHours = 8;
-          bestDesc = "OTOMATİK FMİ İZNİ (YOKLAMA)";
-        } else if (isStandby) {
-          bestAutoType = "AUTO_STANDBY";
-          const dayType = getDayTypeGS(dateStr);
-          const isHoliday = status.includes('RESMİ') || status.includes('RESMI') || note.includes('RESMİ') || note.includes('RESMI') || dayType === "Resmi Tatil";
-          bestHours = isHoliday ? 2 : 1;
-          bestDesc = isHoliday ? "OTOMATİK RESMİ TATİL BEKLEME (YOKLAMA)" : "OTOMATİK BEKLEME MESAİSİ";
-        } else if (isDuty) {
-          bestAutoType = "AUTO_DUTY";
-          const dayType = getDayTypeGS(dateStr);
-          const isWkHoliday = dayType === "Resmi Tatil" || dayType === "Hafta Sonu";
-          bestHours = isWkHoliday ? 11 : 3;
-          bestDesc = `OTOMATİK GÖREV MESAİSİ (${isWkHoliday ? 'HAFTA SONU' : 'HAFTA İÇİ'})`;
-        }
-      });
-
-      if (bestAutoType) {
-        const autoId = `auto-${bestAutoType.toLowerCase()}-${pid}-${dateStr}`;
-        const personnel = initData.personnel.find(p => {
-          const personIdOfRow = String(getValGS(p, ['ID', 'PERSONID', 'PID', 'KİŞİ ID', 'KISI ID'])).trim();
-          return personIdOfRow === pid;
-        });
-        let name = personnel ? (getValGS(personnel, ['FULLNAME', 'PERSONNAME', 'AD_SOYAD', 'AD SOYADI']) || pid) : pid;
-        
-        desiredAutoTxs[autoId] = { pid, name, date: dateStr, hours: bestHours, type: bestAutoType === "AUTO_FMI" ? "USED" : "EARNED", desc: bestDesc, dayType: getDayTypeGS(dateStr) };
+      if (manualRows.length > 0) {
+        txSheet.getRange(2, 1, manualRows.length, txData[0].length).setValues(manualRows);
       }
-    });
-
-    // 3. Clear existing overtimes (except header) and rewrite completely
-    if (txSheet.getLastRow() > 1) {
-      txSheet.getRange(2, 1, txSheet.getLastRow() - 1, txSheet.getLastColumn()).clearContent();
+      return { success: true, cleaned: true, manualCount: manualRows.length, message: "Eski otomatik satırlar temizlendi." };
     }
 
-    const allRowsToWrite = [];
-    
-    // Add manual entries first
-    manualRows.forEach(row => {
-      allRowsToWrite.push(row);
-    });
-
-    // Convert and append new automatic sync entries
-    Object.keys(desiredAutoTxs).forEach(id => {
-      const tx = desiredAutoTxs[id];
-      const row = headers.map(h => {
-        switch(h) {
-          case "ID": return id;
-          case "PERSONID": case "PID": return tx.pid;
-          case "PERSONNAME": return tx.name;
-          case "DATE": return ""; // Empty B column for auto rows (as requested, removing the date data)
-          case "ENDDATE": return ""; // Empty ENDDATE column too
-          case "DAYS": return 1;
-          case "HOURS": return tx.hours;
-          case "TYPE": return tx.type;
-          case "SHIFT": return "Gündüz";
-          case "DAYTYPE": return tx.dayType;
-          case "DESCRIPTION": return tx.desc;
-          case "STATUS": return "APPROVED";
-          case "DATE_L": return tx.date; // Put in L column
-          case "TIMESTAMP": return new Date();
-          default: return "";
-        }
-      });
-      allRowsToWrite.push(row);
-    });
-
-    const maxCols = Math.max(headers.length, 12);
-    const finalizedRows = allRowsToWrite.map(row => {
-      const tempRow = [...row];
-      while (tempRow.length < maxCols) {
-        tempRow.push("");
-      }
-      return tempRow;
-    });
-
-    if (finalizedRows.length > 0) {
-      txSheet.getRange(2, 1, finalizedRows.length, maxCols).setValues(finalizedRows);
-    }
-    
-    return { added: Object.keys(desiredAutoTxs).length, manualKept: manualRows.length };
+    return { success: true, cleaned: false, message: "Kayıt yazılmadı (Yoklamadan çekilen veriler sadece tarayıcı önbelleğinde/belleğinde tutuluyor)." };
   } finally {
     if (lockObj) {
       try { lockObj.releaseLock(); } catch(e) {}
@@ -1010,6 +920,14 @@ function getProp(obj, propName) {
   if (upper === "DESCRIPTION") {
     if (obj.desc !== undefined && obj.desc !== null) return obj.desc;
     if (obj.DESC !== undefined && obj.DESC !== null) return obj.DESC;
+  }
+  if (upper === "DAYTYPE") {
+    if (obj.dayType !== undefined && obj.dayType !== null) return obj.dayType;
+    if (obj.DAY_TYPE !== undefined && obj.DAY_TYPE !== null) return obj.DAY_TYPE;
+    if (obj.GUN_TIPI !== undefined && obj.GUN_TIPI !== null) return obj.GUN_TIPI;
+    if (obj.GÜN_TİPİ !== undefined && obj.GÜN_TİPİ !== null) return obj.GÜN_TİPİ;
+    if (obj["GÜN TİPİ"] !== undefined && obj["GÜN TİPİ"] !== null) return obj["GÜN TİPİ"];
+    if (obj["GUN TIPI"] !== undefined && obj["GUN TIPI"] !== null) return obj["GUN TIPI"];
   }
   return "";
 }
