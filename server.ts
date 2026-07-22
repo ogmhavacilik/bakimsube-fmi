@@ -1,96 +1,6 @@
 import express from "express";
 import path from "path";
-import https from "https";
-import http from "http";
-import { URL } from "url";
 import { createServer as createViteServer } from "vite";
-
-// Custom helper: Follows redirects and allows arbitrary timeout for slow Apps Script environments
-function requestWithRedirects(
-  targetUrl: string,
-  method: string,
-  headers: Record<string, string>,
-  body?: string,
-  redirectCount = 0
-): Promise<{ statusCode?: number; headers: any; body: string }> {
-  return new Promise((resolve, reject) => {
-    if (redirectCount > 10) {
-      return reject(new Error("Çok fazla yönlendirme (Too many redirects)"));
-    }
-
-    const parsedUrl = new URL(targetUrl);
-    const lib = parsedUrl.protocol === "https:" ? https : http;
-
-    const reqHeaders = { ...headers };
-    if (body) {
-      reqHeaders["Content-Length"] = Buffer.byteLength(body).toString();
-    } else {
-      delete reqHeaders["Content-Length"];
-      delete reqHeaders["Content-Type"];
-    }
-
-    const reqOptions: https.RequestOptions = {
-      method: method,
-      protocol: parsedUrl.protocol,
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
-      path: parsedUrl.pathname + parsedUrl.search,
-      headers: reqHeaders,
-    };
-
-    const req = lib.request(reqOptions, (res) => {
-      const statusCode = res.statusCode || 200;
-
-      // Handle redirect
-      if ([301, 302, 303, 307, 308].includes(statusCode) && res.headers.location) {
-        const redirectUrl = new URL(res.headers.location, targetUrl).toString();
-        let nextMethod = method;
-        let nextBody = body;
-        let nextHeaders = { ...headers };
-
-        if ([301, 302, 303].includes(statusCode)) {
-          nextMethod = "GET";
-          nextBody = undefined;
-          delete nextHeaders["Content-Type"];
-          delete nextHeaders["Content-Length"];
-        }
-
-        return resolve(
-          requestWithRedirects(redirectUrl, nextMethod, nextHeaders, nextBody, redirectCount + 1)
-        );
-      }
-
-      // Read response
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => {
-        chunks.push(chunk);
-      });
-
-      res.on("end", () => {
-        const responseBody = Buffer.concat(chunks).toString("utf8");
-        resolve({
-          statusCode: statusCode,
-          headers: res.headers,
-          body: responseBody,
-        });
-      });
-    });
-
-    req.on("error", (err) => {
-      reject(err);
-    });
-
-    // Set connection and response timeouts (120 seconds for safety against cold start latency)
-    req.setTimeout(120000, () => {
-      req.destroy(new Error("Google Apps Script yanıt zaman aşımı (120 saniye aşıldı)"));
-    });
-
-    if (body) {
-      req.write(body);
-    }
-    req.end();
-  });
-}
 
 async function startServer() {
   const app = express();
@@ -114,23 +24,21 @@ async function startServer() {
     }
 
     try {
-      const reqHeaders = {
-        "Content-Type": "application/json"
-      };
-      
       const requestBody = JSON.stringify({ action, ...payload });
 
-      const result = await requestWithRedirects(
-        targetUrl,
-        "POST",
-        reqHeaders,
-        requestBody
-      );
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8"
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(25000)
+      });
 
-      // Probe if the response body is JSON first
+      const text = await response.text();
       let responseJson: any = null;
       try {
-        responseJson = JSON.parse(result.body);
+        responseJson = JSON.parse(text);
       } catch (e) {
         responseJson = null;
       }
@@ -138,7 +46,6 @@ async function startServer() {
       if (responseJson && typeof responseJson === "object") {
         return res.json(responseJson);
       } else {
-        const text = result.body;
         if (text.includes("Google Accounts") || text.includes("signin")) {
           return res.status(403).json({
             success: false,
@@ -149,9 +56,12 @@ async function startServer() {
       }
     } catch (error: any) {
       console.error("Proxy Hatası:", error);
+      const isTimeout = error.name === "AbortError" || error.name === "TimeoutError" || String(error).includes("timeout");
       return res.status(500).json({
         success: false,
-        error: `Sunucu proxy hatası: ${error.message || "Bilinmeyen hata"}`
+        error: isTimeout 
+          ? "Google Apps Script yanıt süresi aşıldı (25s)." 
+          : `Sunucu proxy hatası: ${error.message || "Bilinmeyen hata"}`
       });
     }
   });

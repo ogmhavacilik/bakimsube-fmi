@@ -320,6 +320,38 @@
             return 1.0;
         };
 
+        const checkIsWeekend = (dateStr) => {
+            if (!dateStr) return false;
+            const normalized = formatDateLocal(dateStr);
+            const [y, m, d] = normalized.split('-').map(Number);
+            if (isNaN(y) || isNaN(m) || isNaN(d)) return false;
+            const dt = new Date(y, m - 1, d);
+            return dt.getDay() === 0 || dt.getDay() === 6;
+        };
+
+        const checkIsTechnical = (p) => {
+            if (!p) return false;
+            const pName = String(p.fullName || p.PERSONNAME || p.personName || '').toLocaleUpperCase('tr-TR');
+            const pTitle = String(p.title || p.TITLE || '').toLocaleUpperCase('tr-TR');
+            const isSerkan = pName.includes('SERKAN KOTAN') || pName.includes('SERKAN KÖTEN');
+            return ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => pTitle.includes(t)) && !isSerkan;
+        };
+
+        const checkIsStandbyInAttendance = (targetPid, targetDateStr, attRecords = []) => {
+            if (!targetPid || !targetDateStr) return false;
+            const pidNorm = cleanPersonnelId(targetPid);
+            const dNorm = formatDateLocal(targetDateStr);
+            return (attRecords || []).some(r => {
+                if (cleanPersonnelId(r.personId) !== pidNorm) return false;
+                if (formatDateLocal(r.date) !== dNorm) return false;
+                const st = String(r.status || '').toLocaleUpperCase('tr-TR');
+                const nt = String(r.note || '').toLocaleUpperCase('tr-TR');
+                const lc = String(r.location || r.DUTY_LOC || '').toLocaleUpperCase('tr-TR');
+                const isEx = st.includes('İZİN') || st.includes('IZIN') || st.includes('RAPOR') || st.includes('İSTİRAHAT') || st.includes('HASTANE') || st.includes('KURS');
+                return (st.includes('BEKLEME') || nt.includes('BEKLEME') || lc.includes('BEKLEME')) && !isEx;
+            });
+        };
+
         // --- HELPER FUNCTIONS ---
         const apiCall = async (action, payload = {}, targetUrl = OVERTIME_SCRIPT_URL) => {
             const urlsToTry = [targetUrl];
@@ -331,70 +363,86 @@
             let lastError = null;
             for (const url of urlsToTry) {
                 try {
-                    let response;
-                    let useDirect = window.location.hostname.includes('netlify') || 
-                                    window.location.hostname.includes('github.io') || 
-                                    window.location.hostname.includes('vercel.app') || 
-                                    window.location.hostname.includes('firebaseapp.com');
+                    const isDirectStatic = window.location.hostname.includes('netlify') || 
+                                         window.location.hostname.includes('github.io') || 
+                                         window.location.hostname.includes('vercel.app') || 
+                                         window.location.hostname.includes('firebaseapp.com');
 
-                    if (!useDirect) {
+                    const reqBodyObj = {
+                        action,
+                        ...payload,
+                        user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
+                    };
+                    const reqPayload = JSON.stringify(reqBodyObj);
+
+                    // 1. Try proxy first unless on static hosting
+                    if (!isDirectStatic) {
                         try {
-                            response = await fetch('/api/proxy', {
+                            const controller = new AbortController();
+                            const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+                            const proxyRes = await fetch('/api/proxy', {
                                 method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json'
-                                },
+                                headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     targetUrl: url,
-                                    action,
-                                    ...payload,
-                                    user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
-                                })
+                                    ...reqBodyObj
+                                }),
+                                signal: controller.signal
                             });
+                            clearTimeout(timeoutId);
 
-                            if (response.status === 404) {
-                                console.warn("Proxy endpoint not found (404). Falling back to direct Apps Script call.");
-                                useDirect = true;
+                            if (proxyRes.ok) {
+                                const json = await proxyRes.json();
+                                if (json && json.success) {
+                                    return json.data;
+                                } else if (json && json.error) {
+                                    console.warn("Proxy returned error response:", json.error);
+                                }
+                            } else {
+                                console.warn(`Proxy returned HTTP status ${proxyRes.status}. Falling back to direct call.`);
                             }
                         } catch (proxyErr) {
-                            console.warn("Proxy call failed, falling back to direct Apps Script call:", proxyErr);
-                            useDirect = true;
+                            console.warn("Proxy call failed or timed out, falling back to direct call:", proxyErr);
                         }
                     }
 
-                    if (useDirect) {
-                        // Direct POST request to Google Apps Script. 
-                        // Using 'text/plain;charset=utf-8' ensures it remains a 'simple request'
-                        // and bypasses CORS preflight (OPTIONS) restrictions standard browsers enforce.
-                        response = await fetch(url, {
+                    // 2. Direct POST request fallback to Google Apps Script
+                    try {
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+                        const directRes = await fetch(url, {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'text/plain;charset=utf-8'
                             },
-                            body: JSON.stringify({
-                                action,
-                                ...payload,
-                                user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
-                            })
+                            body: reqPayload,
+                            signal: controller.signal
                         });
-                    }
+                        clearTimeout(timeoutId);
 
-                    if (!response || !response.ok) {
-                        const errJson = await response.json().catch(() => null);
-                        const errMsg = errJson && errJson.error ? errJson.error : `Ağ hatası (${response ? response.status : 'Bağlantı Yok'})`;
-                        throw new Error(errMsg);
+                        if (directRes.ok) {
+                            const json = await directRes.json();
+                            if (json && json.success) {
+                                return json.data;
+                            } else if (json && json.error) {
+                                throw new Error(json.error);
+                            }
+                        } else {
+                            throw new Error(`Ağ hatası (${directRes.status})`);
+                        }
+                    } catch (directErr) {
+                        console.warn(`Direct fetch failed on ${url}:`, directErr);
+                        throw directErr;
                     }
-                    
-                    const json = await response.json();
-                    if (!json.success) throw new Error(json.error || 'API Hatası');
-                    return json.data;
                 } catch (error) {
-                    console.warn(`API call failed on ${url} for action "${action}". Trying next if available. Error:`, error);
+                    console.warn(`API call failed on ${url} for action "${action}". Error:`, error);
                     lastError = error;
                 }
             }
             console.error("All URLs failed for API action " + action + ":", lastError);
-            throw lastError || new Error("API Hatası");
+            throw lastError || new Error("API sunucusu ile bağlantı kurulamadı. Lütfen ağ bağlantınızı ve yetkilerinizi kontrol ediniz.");
         };
 
         const copyYoklamaFormat = (tx) => {
@@ -1327,9 +1375,7 @@
 
                     const pid = cleanPersonnelId(newTx.personId);
                     const person = personnel.find(p => cleanPersonnelId(p.id) === pid);
-                    const title = (person?.title || '').toLocaleUpperCase('tr-TR');
-                    const name = (person?.fullName || '').toLocaleUpperCase('tr-TR');
-                    const isTechnical = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => title.includes(t)) && !(name.includes('SERKAN KOTAN') || name.includes('SERKAN KÖTEN'));
+                    const isTechnical = checkIsTechnical(person);
                     
                     const dayType = getDayType(newTx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (newTx.dayType || getDayType(newTx.date));
                     const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
@@ -1341,21 +1387,34 @@
                     const isHolidayStandby = hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby);
                     const isStandby = hasBeklemeInText && !isHolidayStandby;
                     const isPlannedDuty = txId.includes('auto_duty') || desc.includes('OTOMATİK GÖREV') || desc.includes('PLANLI GÖREV') || desc.includes('GÖREV MESAİSİ');
+                    const isAnyDuty = (txId.includes('duty') || desc.includes('GÖREV') || desc.includes('GOREV') || (!isAuto && newTx.type === TRANSACTION_TYPES.EARNED)) && !isStandby && !isHolidayStandby;
 
-                    if (isHolidayStandby) {
-                        newTx.displayHours = 2.0;
-                        newTx.hours = 2.0;
+                    const isWk = checkIsWeekend(newTx.date);
+                    const isStandbyInYoklama = checkIsStandbyInAttendance(pid, newTx.date, attendanceRecords);
+
+                    // Check if person has a duty on this weekend day
+                    const hasDutyOnWeekendDay = isWk && allTxs.some(oTx => {
+                        if (cleanPersonnelId(oTx.personId) !== pid) return false;
+                        if (formatDateLocal(oTx.date) !== formatDateLocal(newTx.date)) return false;
+                        const oId = String(oTx.id || oTx.ID || '').toLowerCase();
+                        const oDesc = String(oTx.description || oTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                        const oIsStandby = oId.includes('standby') || oDesc.includes('BEKLEME');
+                        const oIsFmi = oDesc.includes('FMİ') || oDesc.includes('FMI') || oDesc.includes('F.M.İ');
+                        return !oIsStandby && !oIsFmi;
+                    });
+
+                    if (isTechnical && isWk && isStandbyInYoklama && isAnyDuty) {
+                        // Special rule for OGM1: Standby person coming to duty on weekend gets 10 hours
+                        newTx.displayHours = 10.0;
+                        newTx.hours = 10.0;
+                    } else if (isHolidayStandby) {
+                        newTx.displayHours = (isTechnical && isWk && hasDutyOnWeekendDay) ? 0 : 2.0;
+                        newTx.hours = newTx.displayHours;
                     } else if (isStandby) {
-                        newTx.displayHours = 1.0;
-                        newTx.hours = 1.0;
+                        const hVal = (isTechnical && isWk) ? (hasDutyOnWeekendDay ? 0 : 2.0) : 1.0;
+                        newTx.displayHours = hVal;
+                        newTx.hours = hVal;
                     } else if (isPlannedDuty) {
-                         const isWk = (() => {
-                             if (!newTx.date) return false;
-                             const datePart = formatDateLocal(newTx.date);
-                             const [y, m, d] = datePart.split('-').map(Number);
-                             const dt = new Date(y, m - 1, d);
-                             return dt.getDay() === 0 || dt.getDay() === 6;
-                         })();
                          newTx.displayHours = isWk ? 11.0 : 3.0;
                          newTx.hours = isWk ? 11.0 : 3.0;
                     } else if (isAuto && newTx.displayHours === undefined && newTx.hours === undefined) {
@@ -1541,26 +1600,63 @@
                                 let points = hoursPerDay;
                                 let skip = false;
 
+                                const isWk = cur.getDay() === 0 || cur.getDay() === 6;
+                                const isStandbyInYoklama = checkIsStandbyInAttendance(pid, curStr, attendanceRecords);
+
+                                const hasDutyOnThisDay = sortedTxs.some(oTx => {
+                                    if (cleanPersonnelId(oTx.personId) !== pid) return false;
+                                    if (formatDateLocal(oTx.date) !== curStr) return false;
+                                    const oId = String(oTx.id || oTx.ID || '').toLowerCase();
+                                    const oDesc = String(oTx.description || oTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                                    const oIsStandby = oId.includes('standby') || oDesc.includes('BEKLEME');
+                                    const oIsFmi = oDesc.includes('FMİ') || oDesc.includes('FMI') || oDesc.includes('F.M.İ');
+                                    return !oIsStandby && !oIsFmi;
+                                });
+
                                 if (isHolidayStandby) {
                                     if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
-                                        points = 2.0; // Holiday Standby always 2h
+                                        if (isTechnical && isWk && hasDutyOnThisDay) {
+                                            points = 0; // Superseded by 10h weekend duty
+                                        } else {
+                                            points = 2.0; // Holiday Standby always 2h
+                                        }
                                     }
                                 } else if (isStandby) {
                                     if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
                                         if (!isStandbyDate(curStr)) skip = true;
-                                        else points = 1.0; // Normal standby 1h
+                                        else if (isTechnical && isWk) {
+                                            if (hasDutyOnThisDay) points = 0; // Superseded by 10h weekend duty
+                                            else points = 2.0; // OGM1 normal weekend standby gives 2 points
+                                        } else {
+                                            points = 1.0; // Normal standby 1h
+                                        }
                                     }
                                 } else if (isAnyDuty) {
                                     const dayType = tx.dayType || getDayType(curStr);
-                                    const isWk = cur.getDay() === 0 || cur.getDay() === 6;
                                     const isInSeason = isPlannedDutySeason(curStr);
                                     const isThisPlanned = isPlannedDuty || (isAutoDuty && isInSeason);
 
-                                    if (isThisPlanned) {
+                                    if (isTechnical && isWk && isStandbyInYoklama) {
+                                        // OGM1 rule: Standby person coming to duty on weekend gets 10 hours automatically
+                                        points = 10.0;
+                                        if (isThisPlanned) {
+                                            if (processedDays.PLANNED_DUTY.has(dayKey)) skip = true;
+                                            else {
+                                                processedDays.PLANNED_DUTY.add(dayKey);
+                                                map[pid].plannedDutyWeekend.days += 1;
+                                                map[pid].plannedDutyWeekend.hours += points;
+                                            }
+                                        } else {
+                                            const dayStats = map[pid].breakdown[dayType] || { day: 0, night: 0 };
+                                            if (String(tx.shift).toUpperCase().includes('GECE')) dayStats.night += points; 
+                                            else dayStats.day += points;
+                                            map[pid].breakdown[dayType] = dayStats;
+                                        }
+                                    } else if (isThisPlanned) {
                                         if (processedDays.PLANNED_DUTY.has(dayKey)) skip = true;
                                         else {
                                             processedDays.PLANNED_DUTY.add(dayKey);
@@ -1804,21 +1900,20 @@
                 // Validation for standby days & Overall Limits
                 let finalHours = parseFloat(formData.hours);
                 if (modalType === 'add') {
-                    // Maximum hours check
-                    const maxAllowed = isWk ? 11 : 3;
-                    if (finalHours > maxAllowed) {
-                        alert(`DİKKAT: Hafta ${isWk ? 'sonu' : 'içi'} en fazla ${maxAllowed} saat mesai girişi yapılabilir.`);
-                        return;
-                    }
-
-                    // Standby deduction: if it's a bekleme day, deduct 1 hour
+                    // Standby deduction or weekend standby rule for OGM1
                     const attendance = getAttendanceRecord(person.id, formData.date);
                     const isStandbyDay = (String(attendance.status || '').toUpperCase().includes('BEKLEME') || String(attendance.note || '').toUpperCase().includes('BEKLEME'));
+                    const isTechPerson = checkIsTechnical(person);
                     
                     if (isStandbyDay) {
-                        const original = finalHours;
-                        finalHours = Math.max(0, finalHours - 1);
-                        alert(`Personel yoklama bilgisi BEKLEME olduğu için, girdiğiniz ${original} saatlik süreden 1 saat düşülerek ${finalHours} saat olarak kaydedilmiştir.`);
+                        if (isTechPerson && isWk) {
+                            finalHours = 10.0;
+                            alert(`Personel (OGM1) BEKLEME iken hafta sonu mesaiye geldiği için otomatik olarak 10 saat mesai tanımlanmıştır.`);
+                        } else {
+                            const original = finalHours;
+                            finalHours = Math.max(0, finalHours - 1);
+                            alert(`Personel yoklama bilgisi BEKLEME olduğu için, girdiğiniz ${original} saatlik süreden 1 saat düşülerek ${finalHours} saat olarak kaydedilmiştir.`);
+                        }
                     }
                 }
 
@@ -2043,7 +2138,7 @@
 
                         row.getCell(22).value = s.earned / 8;
                         row.getCell(23).value = s.used / 8;
-                        row.getCell(24).value = s.balance;
+                        row.getCell(24).value = `${(s.balance / 8).toFixed(1)} Gün (${s.balance.toFixed(1)} S)`;
 
                         const isEven = idx % 2 === 0;
                         const bgHex = isEven ? 'F9FBF9' : 'FFFFFF';
@@ -2191,7 +2286,7 @@
 
                     worksheet.getRow(7).height = 22;
                     worksheet.getCell('A7').value = 'KALAN BAKİYE';
-                    worksheet.getCell('B7').value = `${totals.modalBalance.toFixed(1)} S (SAAT)`;
+                    worksheet.getCell('B7').value = `${(totals.modalBalance / 8).toFixed(1)} GÜN (${totals.modalBalance.toFixed(1)} SAAT)`;
                     worksheet.getCell('C7').value = 'TOPLAM BEKLEME PUANI';
                     worksheet.getCell('D7').value = `${totals.modalNormalStandby + totals.modalHolidayStandby} Puan`;
 
@@ -2561,7 +2656,7 @@
 
                             <td style="font-weight: bold; color: #93c5fd; background: rgba(59, 130, 246, 0.15);">${(s.earned / 8).toFixed(1)} g</td>
                             <td style="font-weight: bold; color: #f59e0b; background: rgba(245, 158, 11, 0.15);">${Math.floor(s.used / 8)}G ${(s.used % 8).toFixed(1)}S</td>
-                            <td class="col-balance">${s.balance.toFixed(1)}</td>
+                            <td class="col-balance">${(s.balance / 8).toFixed(1)} G <span style="font-size: 10px; font-weight: normal; opacity: 0.8;">(${s.balance.toFixed(1)} S)</span></td>
                         </tr>
                     `;
                 });
@@ -2704,7 +2799,7 @@
                                     <th rowspan="2">Toplam</th>
                                     <th rowspan="2">Hakediş</th>
                                     <th rowspan="2">Kullanılan</th>
-                                    <th rowspan="2">Net Bakiye</th>
+                                    <th rowspan="2">Net Bakiye (Gün)</th>
                                 </tr>
                                 <tr>
                                     <th>G</th><th>N</th><th>P</th>
@@ -3492,7 +3587,7 @@
                                                     <th rowSpan="2" className="px-2 py-3 text-center font-black bg-purple-950/40 border-r border-forest-800/10 text-[9px]">TOPLAM</th>
                                                     <th rowSpan="2" className="px-4 py-3 text-center font-black text-blue-300 uppercase">Hakediş</th>
                                                     <th rowSpan="2" className="px-4 py-3 text-center font-black text-amber-400 uppercase">Kullanılan</th>
-                                                    <th rowSpan="2" className="px-4 py-3 text-center text-emerald-400 font-black whitespace-nowrap">NET BAKİYE</th>
+                                                    <th rowSpan="2" className="px-4 py-3 text-center text-emerald-400 font-black whitespace-nowrap">NET BAKİYE (GÜN)</th>
                                                 </tr>
                                                 <tr className="bg-forest-900/20 text-[9px]">
                                                     <th className="px-1 py-1 text-center border-l border-forest-800/50 text-forest-500" title="Gündüz">G</th>
@@ -3595,10 +3690,15 @@
                                                                 <td className="px-4 py-4 text-center font-black text-amber-500/80 text-[10px] whitespace-nowrap bg-amber-500/5">
                                                                     {Math.floor(s.used / 8)}G {(s.used % 8).toFixed(1)}S
                                                                 </td>
-                                                                <td className="px-4 py-4 text-center bg-emerald-500/5">
-                                                                    <span className="text-emerald-400 font-black text-xs">
-                                                                        {s.balance.toFixed(1)}
-                                                                    </span>
+                                                                <td className="px-4 py-4 text-center bg-emerald-500/5 whitespace-nowrap">
+                                                                    <div className="flex flex-col items-center justify-center">
+                                                                        <span className="text-emerald-400 font-black text-xs">
+                                                                            {(s.balance / 8).toFixed(1)} Gün
+                                                                        </span>
+                                                                        <span className="text-[9px] text-emerald-500/80 font-bold">
+                                                                            ({s.balance.toFixed(1)} Saat)
+                                                                        </span>
+                                                                    </div>
                                                                 </td>
                                                             </tr>
                                                         );
@@ -3906,12 +4006,15 @@
                                         const descJoint = `${status} ${note}`.toLocaleUpperCase('tr-TR');
                                         const isWeeklyOrPublicHoliday = getDayType(dateStr) === DAY_TYPES.HOLIDAY;
                                         const isHoliday = descJoint.includes('RESMİ BEKLEME') || descJoint.includes('RESMI BEKLEME') || descJoint.includes('TATİL-BEKLEME') || descJoint.includes('TATIL-BEKLEME') || descJoint.includes('RESMİ TATİL BEKLEME') || descJoint.includes('RESMI TATIL BEKLEME') || descJoint.includes('RESMİ TATİL') || descJoint.includes('RESMI TATIL') || isWeeklyOrPublicHoliday;
+                                        const isWk = checkIsWeekend(dateStr);
+                                        const isTechPerson = checkIsTechnical(selectedPerson);
+                                        const standbyHours = isHoliday ? 2 : ((isTechPerson && isWk) ? 2 : 1);
                                         return {
                                             id: `standby-auto-sync-${r.date}`,
                                             date: dateStr,
                                             type: TRANSACTION_TYPES.EARNED,
-                                            hours: isHoliday ? 2 : 1,
-                                            description: isHoliday ? "RESMİ TATİL BEKLEME-ANKARA" : "BEKLEME-ANKARA",
+                                            hours: standbyHours,
+                                            description: isHoliday ? "RESMİ TATİL BEKLEME-ANKARA" : (isTechPerson && isWk ? "BEKLEME-ANKARA (HAFTA SONU 2P)" : "BEKLEME-ANKARA"),
                                             status: 'APPROVED',
                                             isStandbySync: true, isHolidayStandby: isHoliday, isStandby: !isHoliday
                                         };
@@ -4063,8 +4166,8 @@
                                                     <p className="text-xl font-black text-white">{modalUsed} SAAT</p>
                                                 </div>
                                                 <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-2xl">
-                                                    <p className="text-[10px] font-black text-emerald-400 uppercase mb-1">Kalan Bakiye</p>
-                                                    <p className="text-xl font-black text-emerald-300">{modalBalance.toFixed(1)} S</p>
+                                                    <p className="text-[10px] font-black text-emerald-400 uppercase mb-1">Kalan Net Bakiye</p>
+                                                    <p className="text-xl font-black text-emerald-300">{(modalBalance / 8).toFixed(1)} GÜN <span className="text-xs text-emerald-400 font-bold">({modalBalance.toFixed(1)} Saat)</span></p>
                                                 </div>
                                             </div>
 
@@ -4119,46 +4222,48 @@
                                                 return `${parts[2]}-${parts[1]}-${parts[0]}`;
                                             };
 
-                                            let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
-                                            
-                                            if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
-                                                if (isPlannedDuty) {
-                                                    const isWk = (() => {
-                                                         if (!tx.date) return false;
-                                                         const datePart = formatDateLocal(tx.date);
-                                                          const [y, m, d] = datePart.split('-').map(Number);
-                                                         const dt = new Date(y, m - 1, d);
-                                                         return dt.getDay() === 0 || dt.getDay() === 6;
-                                                     })();
-                                                    hours = isWk ? 11.0 : 3.0;
-                                                } else if (isHolidayStandby) {
-                                                    hours = 2.0;
-                                                } else if (isStandby) {
-                                                    hours = 1.0;
-                                                } else if (isFmi) {
-                                                    hours = 8.0;
-                                                }
-                                            }
-                                            return (
-                                                <div 
-                                                    key={tx.id} 
-                                                    className={`p-3 sm:p-4 ${isPending ? 'bg-amber-900/10 border-amber-500/20' : (isHolidayStandby ? 'bg-fuchsia-950/25 border-fuchsia-800/40 shadow-sm shadow-fuchsia-950/20' : isStandby ? 'bg-violet-950/15 border-violet-800/20' : (isEarned ? 'bg-forest-900/50 border-forest-800' : 'bg-rose-900/10 border-rose-500/10'))} border rounded-2xl flex flex-col sm:flex-row gap-3 sm:items-center justify-between group transition-all`}
-                                                >
-                                                    <div className="flex items-start sm:items-center gap-3 sm:gap-4 flex-1 min-w-0">
-                                                        <div className={`p-2.5 sm:p-3 rounded-xl flex-shrink-0 ${isPending ? 'bg-amber-500/10' : (isHolidayStandby ? 'bg-fuchsia-500/10' : isStandby ? 'bg-violet-500/10' : (isEarned ? (isPlannedDuty ? 'bg-blue-500/10' : 'bg-emerald-500/10') : 'bg-rose-500/10'))}`}>
-                                                            <Icon 
-                                                                name={isPending ? 'Clock' : (isHolidayStandby ? 'Award' : isStandby ? 'Shield' : (isEarned ? 'ArrowUpRight' : 'ArrowDownRight'))} 
-                                                                size={18} 
-                                                                className={isPending ? 'text-amber-500' : (isHolidayStandby ? 'text-fuchsia-400' : isStandby ? 'text-violet-400' : (isEarned ? 'text-emerald-400' : 'text-rose-400'))} 
-                                                            />
-                                                        </div>
-                                                        <div className="min-w-0 flex-1">
-                                                            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-1">
-                                                                <p className="font-black text-white text-xs sm:text-sm uppercase truncate">
-                                                                    {tx.description || tx.DESCRIPTION || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
-                                                                </p>
-                                                                {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">RESMİ TATİL (+2)</span>}
-                                                                {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">BEKLEME (+1)</span>}
+                                             let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
+                                             
+                                             const isWk = checkIsWeekend(tx.date);
+                                             const isTechPerson = checkIsTechnical(selectedPerson);
+                                             const isStandbyInYoklama = checkIsStandbyInAttendance(selectedPerson.id, tx.date, attendanceRecords);
+
+                                             if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty || (!isAuto && tx.type === TRANSACTION_TYPES.EARNED))) {
+                                                 hours = 10.0;
+                                             } else if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
+                                                 if (isPlannedDuty) {
+                                                     hours = isWk ? 11.0 : 3.0;
+                                                 } else if (isHolidayStandby) {
+                                                     hours = 2.0;
+                                                 } else if (isStandby) {
+                                                     hours = (isTechPerson && isWk) ? 2.0 : 1.0;
+                                                 } else if (isFmi) {
+                                                     hours = 8.0;
+                                                 }
+                                             }
+                                             return (
+                                                 <div 
+                                                     key={tx.id} 
+                                                     className={`p-3 sm:p-4 ${isPending ? 'bg-amber-900/10 border-amber-500/20' : (isHolidayStandby ? 'bg-fuchsia-950/25 border-fuchsia-800/40 shadow-sm shadow-fuchsia-950/20' : isStandby ? 'bg-violet-950/15 border-violet-800/20' : (isEarned ? 'bg-forest-900/50 border-forest-800' : 'bg-rose-900/10 border-rose-500/10'))} border rounded-2xl flex flex-col sm:flex-row gap-3 sm:items-center justify-between group transition-all`}
+                                                 >
+                                                     <div className="flex items-start sm:items-center gap-3 sm:gap-4 flex-1 min-w-0">
+                                                         <div className={`p-2.5 sm:p-3 rounded-xl flex-shrink-0 ${isPending ? 'bg-amber-500/10' : (isHolidayStandby ? 'bg-fuchsia-500/10' : isStandby ? 'bg-violet-500/10' : (isEarned ? (isPlannedDuty ? 'bg-blue-500/10' : 'bg-emerald-500/10') : 'bg-rose-500/10'))}`}>
+                                                             <Icon 
+                                                                 name={isPending ? 'Clock' : (isHolidayStandby ? 'Award' : isStandby ? 'Shield' : (isEarned ? 'ArrowUpRight' : 'ArrowDownRight'))} 
+                                                                 size={18} 
+                                                                 className={isPending ? 'text-amber-500' : (isHolidayStandby ? 'text-fuchsia-400' : isStandby ? 'text-violet-400' : (isEarned ? 'text-emerald-400' : 'text-rose-400'))} 
+                                                             />
+                                                         </div>
+                                                         <div className="min-w-0 flex-1">
+                                                             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-1">
+                                                                 <p className="font-black text-white text-xs sm:text-sm uppercase truncate">
+                                                                     {tx.description || tx.DESCRIPTION || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
+                                                                 </p>
+                                                                 {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">RESMİ TATİL (+2)</span>}
+                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">{isTechPerson && isWk ? 'HAFTA SONU BEKLEME (+2)' : 'BEKLEME (+1)'}</span>}
+                                                                 {isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty) && (
+                                                                     <span className="bg-emerald-500/20 text-emerald-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-emerald-500/30">BEKLEME MESAİSİ (+10)</span>
+                                                                 )}
                                                                 {isAuto && (
                                                                     <span className="bg-forest-700 text-[8px] px-1 rounded text-forest-300 font-black uppercase">OTO</span>
                                                                 )}
