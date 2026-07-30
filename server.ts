@@ -61,12 +61,14 @@ async function startServer() {
         return res.json({ success: true, data: text });
       }
     } catch (error: any) {
-      console.error("Proxy Hatası:", error);
-      const isTimeout = error.name === "AbortError" || error.name === "TimeoutError" || String(error).includes("timeout");
-      return res.status(500).json({
+      const isTimeout = error.name === "AbortError" || error.name === "TimeoutError" || String(error).includes("timeout") || String(error).includes("aborted");
+      if (!isTimeout) {
+        console.error("Proxy Hatası:", error?.message || error);
+      }
+      return res.status(504).json({
         success: false,
         error: isTimeout 
-          ? "Google Apps Script yanıt süresi aşıldı (25s)." 
+          ? "Google Apps Script yanıt süresi aşıldı (Zaman aşımı)." 
           : `Sunucu proxy hatası: ${error.message || "Bilinmeyen hata"}`
       });
     }

@@ -170,7 +170,9 @@
         };
 
         const cleanPersonnelId = (id) => {
-            return String(id || '').trim().toLowerCase();
+            if (id === null || id === undefined) return '';
+            const str = String(id).trim().toLowerCase();
+            return str.replace(/^p[-_]?/i, '');
         };
 
         const safeLocalStorageSetItem = (key, value) => {
@@ -363,7 +365,7 @@
                     if (!isDirectStatic) {
                         try {
                             const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 55000);
+                            const timeoutId = setTimeout(() => controller.abort(), 45000);
 
                             const proxyRes = await fetch('/api/proxy', {
                                 method: 'POST',
@@ -376,26 +378,28 @@
                             });
                             clearTimeout(timeoutId);
 
-                            if (proxyRes.ok) {
-                                const json = await proxyRes.json();
-                                if (json && json.success) {
-                                    if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
-                                        throw new Error("GEÇERSİZ YANIT (HTML)");
-                                    }
-                                    return json.data;
-                                } else if (json && json.error) {
-                                    lastError = new Error(json.error);
+                            const json = await proxyRes.json().catch(() => null);
+                            if (json && json.success) {
+                                if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
+                                    throw new Error("GEÇERSİZ YANIT (HTML)");
                                 }
+                                return json.data;
+                            } else if (json && json.error) {
+                                throw new Error(json.error);
                             }
                         } catch (proxyErr) {
                             lastError = proxyErr;
+                            const pErrStr = String(proxyErr?.message || proxyErr || '');
+                            if (pErrStr.includes('Kilit') || pErrStr.includes('meşgul') || pErrStr.includes('yanıt vermedi') || pErrStr.includes('Zaman aşımı') || pErrStr.includes('timeout')) {
+                                throw proxyErr;
+                            }
                         }
                     }
 
                     // 2. Direct POST request fallback to Google Apps Script
                     try {
                         const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 50000);
+                        const timeoutId = setTimeout(() => controller.abort(), 35000);
 
                         const directRes = await fetch(url, {
                             method: 'POST',
@@ -422,12 +426,15 @@
                     }
                 } catch (error) {
                     lastError = error;
+                    const errStr = String(error?.message || error || '');
+                    if (errStr.includes('Kilit') || errStr.includes('meşgul') || errStr.includes('yanıt vermedi') || errStr.includes('Zaman aşımı')) {
+                        break;
+                    }
                 }
             }
-            console.error("All URLs failed for API action " + action + ":", lastError);
             const errName = lastError && lastError.name;
-            const errStr = String(lastError || '');
-            if (errName === 'AbortError' || errName === 'TimeoutError' || errStr.includes('timeout') || errStr.includes('zaman aşımı')) {
+            const errStr = String(lastError?.message || lastError || '');
+            if (errName === 'AbortError' || errName === 'TimeoutError' || errStr.includes('timeout') || errStr.includes('zaman aşımı') || errStr.includes('aborted')) {
                 throw new Error("Sunucu yanıt süresi aşıldı (Zaman aşımı). Lütfen ağ bağlantınızı kontrol edip tekrar deneyiniz.");
             }
             throw lastError || new Error("API sunucusu ile bağlantı kurulamadı. Lütfen ağ bağlantınızı ve yetkilerinizi kontrol ediniz.");
@@ -589,13 +596,16 @@
                     return cached ? JSON.parse(cached) : [];
                 } catch(e) { return []; }
             });
-            const [loading, setLoading] = useState(() => {
-                try {
-                    const cachedP = localStorage.getItem('ogm_personnel');
-                    return !cachedP || JSON.parse(cachedP).length === 0;
-                } catch(e) { return true; }
-            });
+            const [loading, setLoading] = useState(false);
             const [isRefreshing, setIsRefreshing] = useState(false);
+            const [loadingProgress, setLoadingProgress] = useState(0);
+            const [loadingStepText, setLoadingStepText] = useState('Veriler Yükleniyor...');
+            const [verifiedCategories, setVerifiedCategories] = useState({
+                plansiz: false,
+                gorev: false,
+                bekleme: false,
+                fmi: false
+            });
             const [activeTab, setActiveTab] = useState('home'); // 'home', 'attendance', 'history', 'admin'
             const [countdown, setCountdown] = useState(60); // 1 minute in seconds
             const [updateNotice, setUpdateNotice] = useState(null); // Notice modal details
@@ -1065,29 +1075,38 @@
             };
 
             const getAttendanceRecord = (personId, date) => {
-                if (!personId || !date) return { status: 'Mevcut', location: '' };
+                if (!personId || !date) return { status: 'Mevcut', location: '', note: '' };
                 const pidNorm = cleanPersonnelId(personId);
-                const d = String(date).trim().split('T')[0];
+                const targetDateNorm = formatDateLocal(date);
+                if (!targetDateNorm) return { status: 'Mevcut', location: '', note: '' };
                 
                 // Find all matches for this person on this date
-                const matches = attendanceRecords.filter(r => {
+                const matches = (attendanceRecords || []).filter(r => {
                     const rIdNorm = cleanPersonnelId(r.personId);
-                    const rDate = String(r.date || '').trim().split(/[T ]/)[0];
-                    return rIdNorm === pidNorm && rDate === d;
+                    const rDateNorm = formatDateLocal(r.date);
+                    return rIdNorm === pidNorm && rDateNorm === targetDateNorm;
                 });
 
-                if (matches.length === 0) return { status: 'Mevcut', location: '' };
+                if (matches.length === 0) return { status: 'Mevcut', location: '', note: '' };
 
-                // Prioritize "Special" statuses (Görev, İzin, FMİ vb.) over generic "Mevcut"
+                // Prioritize "Special" statuses (Görev, İzin, Bekleme, Rapor, Diğer vb.) over generic "Mevcut"
                 const specificMatch = matches.find(m => {
                     const s = String(m.status || '').toUpperCase();
-                    return s !== 'MEVCUT' && s !== '' && !s.includes('NORMAL');
+                    const n = String(m.note || '').toUpperCase();
+                    const l = String(m.location || '').toUpperCase();
+                    return (s !== 'MEVCUT' && s !== '' && !s.includes('NORMAL')) || n.includes('BEKLEME') || l.includes('BEKLEME') || n.length > 0 || l.length > 0;
                 });
 
                 return specificMatch || matches[0];
             };
 
             const getCurrentAttendanceStatus = (personId, date) => {
+                if (!personId || !date) return 'Mevcut';
+                
+                if (loading && (!attendanceRecords || attendanceRecords.length === 0)) {
+                    return 'Yükleniyor...';
+                }
+
                 const record = getAttendanceRecord(personId, date);
                 const status = String(record.status || '').trim();
                 const statusUpper = status.toLocaleUpperCase('tr-TR');
@@ -1121,7 +1140,7 @@
 
                 if (statusUpper === 'DİĞER' || statusUpper === 'DIGER') {
                     if (record.note) return record.note;
-                    if (location) return `${status} (${location})`;
+                    if (location) return location;
                     return status;
                 }
 
@@ -1143,16 +1162,40 @@
              const refreshData = async (silent = false) => {
                 const prevAttendance = [...attendanceRecords];
                 const prevTransactions = [...transactions];
+                let progressInterval = null;
                 
                 if (!silent) {
                     setIsRefreshing(true);
+                    if (personnel.length === 0) setLoading(true);
+                    setLoadingProgress(5);
+                    setLoadingStepText("1/5: Sunucu bağlantısı ve Google Tablo verileri hazırlanıyor...");
+                    setVerifiedCategories({ plansiz: false, gorev: false, bekleme: false, fmi: false });
+
+                    let pVal = 5;
+                    progressInterval = setInterval(() => {
+                        pVal += 2;
+                        if (pVal > 55) pVal = 55;
+                        setLoadingProgress(pVal);
+                        if (pVal >= 25 && pVal < 40) {
+                            setLoadingStepText("2/5: Personel ve mesai hareketleri indiriliyor...");
+                        } else if (pVal >= 40) {
+                            setLoadingStepText("3/5: Yoklama kayıtları (Görev, Bekleme, Rapor, İzin) taranıyor...");
+                        }
+                    }, 120);
                 }
 
                 try {
-                    const [resPersonnel, resMain] = await Promise.all([
-                        apiCall('get_init_data', {}, PERSONNEL_SCRIPT_URL).catch(e => { console.error("Personnel fetch failed", e); return null; }),
-                        apiCall('get_init_data', {}, OVERTIME_SCRIPT_URL).catch(e => { console.error("Main fetch failed", e); return null; })
-                    ]);
+                    // Single optimized call to Google Apps Script (both URLs are identical, avoid duplicate 4MB fetches)
+                    const resMain = await apiCall('get_init_data', {}, OVERTIME_SCRIPT_URL).catch(() => null);
+                    const resPersonnel = resMain;
+
+                    if (progressInterval) clearInterval(progressInterval);
+
+                    if (!silent) {
+                        setLoadingProgress(60);
+                        setLoadingStepText("4/5: Yoklama verileri mesai ve nöbet skorlarıyla eşleştiriliyor...");
+                        setVerifiedCategories({ plansiz: true, gorev: false, bekleme: false, fmi: false });
+                    }
 
                     // De-duplicate personnel by ID from both sources
                     const personnelMap = {};
@@ -1171,7 +1214,7 @@
 
                     const data = {
                         personnel: combinedPersonnel,
-                        transactions: resMain?.transactions || [],
+                        transactions: resMain?.transactions || resPersonnel?.transactions || [],
                         attendance: [
                             ...(resPersonnel?.attendance || resPersonnel?.yoklama || []),
                             ...(resMain?.attendance || resMain?.yoklama || [])
@@ -1444,29 +1487,24 @@
                     } else {
                         isFirstLoad.current = false;
                     }
+
+                    if (!silent) {
+                        setLoadingProgress(85);
+                        setLoadingStepText("4/5: Tüm mesai türleri doğrulandı (Plansız Mesai, Görev, Bekleme)...");
+                        setVerifiedCategories({ plansiz: true, gorev: true, bekleme: true, fmi: true });
+                        setLoadingProgress(100);
+                        setLoadingStepText("5/5: Hesaplamalar ve veri tabloları güncellendi! (%100)");
+                    }
                 } catch (e) {
                     console.warn("Refresh warning:", e);
                     if (prevTransactions && prevTransactions.length > 0) setTransactions(prevTransactions);
                     if (prevAttendance && prevAttendance.length > 0) setAttendanceRecords(prevAttendance);
                 } finally {
+                    if (progressInterval) clearInterval(progressInterval);
                     setLoading(false);
                     setIsRefreshing(false);
                 }
             };
-
-            // Auto Refresh Timer (1 Minute Countdown)
-            useEffect(() => {
-                const interval = setInterval(() => {
-                    setCountdown(prev => {
-                        if (prev === 1 || prev === 0) {
-                            refreshData(true);
-                            return 60; // Reset to 1 minute
-                        }
-                        return prev - 1;
-                    });
-                }, 1000);
-                return () => clearInterval(interval);
-            }, []);
 
             // Load Initial Data
             useEffect(() => {
@@ -1488,24 +1526,22 @@
                         savedAdmin = localStorage.getItem('ogm_admin_role');
                     } catch(e) { console.error("Failed to load savedAdmin:", e); }
                     
-                    setTransactions(savedTransactions);
-                    setAttendanceRecords(savedAttendance);
-                    setPersonnel(savedPersonnel);
+                    if (savedTransactions.length > 0) setTransactions(savedTransactions);
+                    if (savedAttendance.length > 0) setAttendanceRecords(savedAttendance);
+                    if (savedPersonnel.length > 0) setPersonnel(savedPersonnel);
                     setAdminRole(savedAdmin);
                     
-                    // 1. Ekranı anında göster
+                    // Open application INSTANTLY without blocking UI
                     setLoading(false);
+                    setIsRefreshing(true);
                     
-                    // 2. Arka planda verileri günceller ve senkronizasyonu sürdürür
-                    refreshData(true).catch(e => console.warn("Sessiz veri güncelleme uyarısı:", e));
-                    
-                    apiCall('sync_auto_transactions', {}, OVERTIME_SCRIPT_URL)
-                        .then(() => {
-                            console.log("Arka plan otomatik senkronizasyon tamamlandı.");
-                        })
-                        .catch(e => {
-                            console.warn("Arka plan senkronizasyon uyarısı:", e);
-                        });
+                    try {
+                        await refreshData(true);
+                    } catch (e) {
+                        console.error("Init refresh error:", e);
+                    } finally {
+                        setIsRefreshing(false);
+                    }
                 };
                 init();
             }, []);
@@ -1638,29 +1674,6 @@
                                     isPlanned: true
                                 });
                             }
-                        } else {
-                            // Plansız (unplanned) Görev - parse hours & shift from note
-                            const rawNote = record.note || '';
-                            const matchHours = rawNote.match(/SAAT:\s*([\d.]+)/i);
-                            const matchShift = rawNote.match(/VARDIYA:\s*(GECE|GUNDUZ|GÜNDÜZ)/i);
-                            const finalHours = matchHours ? parseFloat(matchHours[1]) : 8.0;
-                            const finalShift = matchShift ? (matchShift[1].toLocaleUpperCase('tr-TR') === 'GECE' ? 'Gece' : 'Gündüz') : 'Gündüz';
-                            const cleanNote = rawNote.replace(/\[SAAT:\s*[\d.]+,?\s*VARDIYA:\s*[^\]]+\]\s*/i, '').trim();
-                            
-                            attendanceVirtual.push({
-                                id: `auto-plansiz-${pid}-${dateStr}`,
-                                personId: pid,
-                                personName: p?.fullName || pid,
-                                date: dateStr,
-                                type: TRANSACTION_TYPES.EARNED,
-                                hours: finalHours,
-                                shift: finalShift,
-                                description: cleanNote ? `PLANSIZ GÖREV (YOKLAMA) - ${cleanNote}` : 'PLANSIZ GÖREV (YOKLAMA)',
-                                status: 'APPROVED',
-                                isAuto: true,
-                                isPlanned: false,
-                                location: loc || ''
-                            });
                         }
                     }
                 });
@@ -1723,8 +1736,8 @@
                     if ((isStandby || isHolidayStandby) && !isDriverPerson && !isStandbyDate(dateLocal)) return false;
                     if (isFmiUsage && !isStandbyDate(dateLocal)) return false;
 
-                    // Broaden isDuty to include manual entries that are not standby/planned
-                    const isDuty = ((id.includes('auto_duty') || desc.includes('GÖREV') || desc.includes('GOREV')) || (!isAuto && tx.type === TRANSACTION_TYPES.EARNED)) && !isStandby && !isHolidayStandby && !isPlannedDuty;
+                    // Broaden isDuty to include all earned entries (manual or auto) that are not standby/planned/fmi
+                    const isDuty = ((id.includes('auto_duty') || id.includes('duty') || id.includes('plansiz') || desc.includes('GÖREV') || desc.includes('GOREV')) || tx.type === TRANSACTION_TYPES.EARNED) && !isStandby && !isHolidayStandby && !isPlannedDuty && !isFmiUsage;
 
                     if (isPlannedDuty) {
                         const key = `${pid}_${dateLocal}`;
@@ -1945,8 +1958,8 @@
                         
                         const isPlannedDuty = txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV') || descUpper.includes('PLANLI GOREV') || descUpper.includes('GÖREV MESAİSİ') || descUpper.includes('GOREV MESAISI');
                         const isAutoDuty = txId.includes('auto_duty');
-                        // Broaden isDuty: include manual earned entries that aren't standby or planned duty
-                        const isDuty = (isAutoDuty || descUpper.includes('GÖREV') || descUpper.includes('GOREV') || (!txId.startsWith('auto-') && tx.type === TRANSACTION_TYPES.EARNED)) && !isStandby && !isHolidayStandby && !isPlannedDuty;
+                        // Broaden isDuty: include all earned entries (manual or auto) that aren't standby or planned duty
+                        const isDuty = (isAutoDuty || txId.includes('duty') || txId.includes('plansiz') || descUpper.includes('GÖREV') || descUpper.includes('GOREV') || tx.type === TRANSACTION_TYPES.EARNED) && !isStandby && !isHolidayStandby && !isPlannedDuty;
 
                         // FILTER BY SEASON (1 May - 31 Dec for technical, 1 Jan - 31 Dec for drivers)
                         const personObj = personnel.find(p => cleanPersonnelId(p.id) === pid);
@@ -1986,7 +1999,7 @@
                             const numDays = parseFloat(tx.days || 1);
                             const hoursPerDay = h / numDays;
 
-                            for (let i = 0; i !== numDays; i++) {
+                            for (let i = 0; i < Math.max(1, Math.ceil(numDays)); i++) {
                                 const cur = new Date(y, mm - 1, dd + i);
                                 const curStr = formatDateLocal(cur);
                                 const dayKey = `${pid}_${curStr}`;
@@ -2219,8 +2232,69 @@
                 setActiveTab('home');
             };
 
+            const openPendingDetailModal = (tx) => {
+                const person = personnel.find(p => cleanPersonnelId(p.id) === cleanPersonnelId(tx.personId)) || { id: tx.personId, fullName: tx.personName };
+                setSelectedPendingTx(tx);
+                setSelectedPerson(person);
+                setModalType(tx.type === TRANSACTION_TYPES.USED ? 'use' : 'add');
+                setFormData({
+                    personId: person.id || tx.personId || '',
+                    date: tx.date || '',
+                    endDate: tx.endDate || tx.date || '',
+                    startTime: tx.startTime || '08:00',
+                    endTime: tx.endTime || '17:00',
+                    dayType: tx.dayType || (tx.date ? getDayType(tx.date) : ''),
+                    hours: String(tx.hours || ''),
+                    days: String(tx.days || '1'),
+                    description: tx.description || tx.DESCRIPTION || tx.note || '',
+                    shift: tx.shift || 'Gündüz'
+                });
+            };
+
             const handleAddOvertime = async (e) => {
                 e.preventDefault();
+
+                // 0. APPROVE PENDING REQUEST FROM DETAIL MODAL
+                if (selectedPendingTx) {
+                    try {
+                        setLoading(true);
+                        const person = selectedPerson || personnel.find(p => cleanPersonnelId(p.id) === cleanPersonnelId(formData.personId || selectedPendingTx.personId));
+                        const pid = person?.id || selectedPendingTx.personId;
+                        const pname = person?.fullName || selectedPendingTx.personName;
+                        const finalHours = parseFloat(formData.hours) || parseFloat(selectedPendingTx.hours) || 0;
+
+                        const updatedTx = {
+                            ...selectedPendingTx,
+                            personId: pid,
+                            personName: pname,
+                            date: formData.date || selectedPendingTx.date,
+                            endDate: (modalType === 'use' || selectedPendingTx.type === TRANSACTION_TYPES.USED) ? (formData.endDate || formData.date || selectedPendingTx.endDate) : (formData.date || selectedPendingTx.date),
+                            days: (modalType === 'use' || selectedPendingTx.type === TRANSACTION_TYPES.USED) ? parseFloat(formData.days || selectedPendingTx.days || 1) : 1,
+                            hours: finalHours,
+                            shift: formData.shift || selectedPendingTx.shift || 'Gündüz',
+                            dayType: formData.dayType || selectedPendingTx.dayType || (formData.date ? getDayType(formData.date) : ''),
+                            description: formData.description || selectedPendingTx.description || selectedPendingTx.note || '',
+                            note: formData.description || selectedPendingTx.note || '',
+                            status: 'APPROVED'
+                        };
+
+                        await apiCall('approve_overtime', { id: selectedPendingTx.id, transaction: updatedTx }, OVERTIME_SCRIPT_URL);
+
+                        setTransactions(prev => prev.map(t => t.id === selectedPendingTx.id ? { ...updatedTx, status: 'APPROVED' } : t));
+                        showToast("Talep incelendi, onaylandı ve sisteme işlendi.");
+                        await refreshData();
+                    } catch (err) {
+                        showToast("Onaylama hatası: " + (err.message || err), "error");
+                    } finally {
+                        setLoading(false);
+                        setModalType(null);
+                        setFormData({ date: '', startTime: '', endTime: '', dayType: '', hours: '', description: '', personId: '', days: '1', shift: 'Gündüz', endDate: '' });
+                        setSelectedPerson(null);
+                        setSearchTerm('');
+                        setSelectedPendingTx(null);
+                    }
+                    return;
+                }
 
                 // 1. DUPLICATE/OVERLAP CHECK: Prevent same person having overlapping time on same day
                 const pid = selectedPerson?.id || formData.personId;
@@ -3486,20 +3560,15 @@
                                     <span className="hidden sm:inline">{t.label}</span>
                                 </button>
                             ))}
-                            <div className="px-4 py-2.5 rounded-lg flex items-center gap-2 text-rose-400 font-mono text-sm border-r border-forest-800/80 pr-4 mr-1" title="Otomatik Senkronizasyon Kalan Süre">
-                                <Icon name="Clock" size={15} className="text-rose-400 animate-pulse" />
-                                <span>{Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')}</span>
-                            </div>
                             <button 
                                 onClick={async () => {
                                     await refreshData();
-                                    setCountdown(60);
                                 }}
                                 disabled={loading}
-                                className={`px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all font-bold text-sm text-forest-400 hover:text-white disabled:opacity-50`}
+                                className={`px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all font-bold text-sm text-emerald-400 hover:text-white bg-forest-900/60 hover:bg-forest-800 border border-emerald-800/40 disabled:opacity-50 shadow-sm`}
                             >
                                 <Icon name="RotateCcw" size={18} className={loading ? 'animate-spin' : ''} />
-                                <span className="hidden sm:inline">Güncelle</span>
+                                <span className="hidden sm:inline">Yenile</span>
                             </button>
                         </nav>
                     </header>
@@ -3561,10 +3630,12 @@
                                         const setStatus = async (newStatus, location = '', isPlanned = true) => {
                                             if (status === newStatus && (record?.location || '') === location && (record?.isPlanned ?? true) === isPlanned) return;
 
-                                            const otherRecords = attendanceRecords.filter(r => !(r.personId === p.id && r.date === selectedDate));
+                                            const pidNorm = cleanPersonnelId(p.id);
+                                            const targetDateNorm = formatDateLocal(selectedDate);
+                                            const otherRecords = attendanceRecords.filter(r => !(cleanPersonnelId(r.personId) === pidNorm && formatDateLocal(r.date) === targetDateNorm));
                                             const newRecord = { 
                                                 personId: p.id || "", 
-                                                date: selectedDate || "", 
+                                                date: targetDateNorm || selectedDate || "", 
                                                 status: newStatus || "", 
                                                 location: location || "", 
                                                 isPlanned: isPlanned !== undefined ? isPlanned : true,
@@ -3769,7 +3840,16 @@
                                         </thead>
                                         <tbody className="divide-y divide-forest-800/50">
                                             {filteredTransactions.map(tx => (
-                                                <tr key={tx.id} className="hover:bg-forest-800/20 transition-colors">
+                                                <tr 
+                                                    key={tx.id} 
+                                                    onDoubleClick={() => {
+                                                        if (tx.status === 'PENDING') {
+                                                            openPendingDetailModal(tx);
+                                                        }
+                                                    }}
+                                                    title={tx.status === 'PENDING' ? 'Talebi incelemek ve onaylamak için çift tıklayın' : ''}
+                                                    className={`hover:bg-forest-800/20 transition-colors ${tx.status === 'PENDING' ? 'cursor-pointer' : ''}`}
+                                                >
                                                                 <td className="px-4 py-4">
                                                                     <div className="flex flex-col">
                                                                         <span className="font-bold text-white text-sm">{tx.personName}</span>
@@ -3896,7 +3976,12 @@
                                                 </thead>
                                                 <tbody className="divide-y divide-forest-800/50">
                                                     {pendingApprovals.map(tx => (
-                                                        <tr key={tx.id} className="hover:bg-forest-800/20 transition-colors">
+                                                        <tr 
+                                                            key={tx.id} 
+                                                            onDoubleClick={() => openPendingDetailModal(tx)}
+                                                            title="Detayları incelemek ve onaylamak için çift tıklayın"
+                                                            className="hover:bg-forest-800/30 transition-colors cursor-pointer group"
+                                                        >
                                                             <td className="px-4 py-4">
                                                                 <div className="flex flex-col">
                                                                     <span className="font-bold text-white text-sm">{tx.personName}</span>
@@ -3920,7 +4005,15 @@
                                                                 {tx.description || tx.DESCRIPTION || '-'}
                                                             </td>
                                                             <td className="px-4 py-4 text-right">
-                                                                <div className="flex items-center justify-end gap-2">
+                                                                <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                                                                    <button 
+                                                                        type="button"
+                                                                        onClick={() => openPendingDetailModal(tx)}
+                                                                        className="px-2.5 py-1.5 bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white rounded-lg text-xs font-black transition-all flex items-center gap-1 border border-blue-500/20"
+                                                                        title="Detayları İncele ve Onayla"
+                                                                    >
+                                                                        <Icon name="Eye" size={12} /> İncele
+                                                                    </button>
                                                                     {!(tx.type === TRANSACTION_TYPES.USED && !hasAttendanceFmi(tx)) ? (
                                                                         <button 
                                                                             onClick={() => {
@@ -3981,6 +4074,13 @@
                                     icon="BarChart3"
                                     actions={
                                         <div className="flex items-center gap-1.5 flex-wrap">
+                                            {isRefreshing && (
+                                                <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-950/80 border border-emerald-700/60 text-emerald-300 rounded-lg text-xs font-bold shadow-sm animate-pulse">
+                                                    <Icon name="RotateCcw" className="animate-spin text-emerald-400" size={13} />
+                                                    <span className="hidden md:inline">Veriler Senkronize Ediliyor... (%{loadingProgress || 10})</span>
+                                                    <span className="md:hidden">%{loadingProgress || 10}</span>
+                                                </div>
+                                            )}
                                             <button 
                                                 onClick={exportHTMLReport}
                                                 className="bg-forest-800/80 hover:bg-forest-750 text-forest-100 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 border border-forest-700 cursor-pointer"
@@ -4000,7 +4100,60 @@
                                         </div>
                                     }
                                 >
-                                    <div className="overflow-x-auto">
+                                    <div className="relative min-h-[350px]">
+                                        {(loading || isRefreshing) && (
+                                            <div className="absolute inset-0 z-30 bg-forest-950/90 backdrop-blur-md flex flex-col items-center justify-center p-6 rounded-2xl border border-forest-800/60 shadow-2xl transition-all duration-300">
+                                                <div className="relative mb-3 flex items-center justify-center">
+                                                    <div className="w-16 h-16 border-4 border-emerald-500/20 border-t-emerald-400 rounded-full animate-spin"></div>
+                                                    <span className="text-emerald-400 absolute text-xs font-black font-mono">
+                                                        %{loadingProgress || 10}
+                                                    </span>
+                                                </div>
+                                                
+                                                <h3 className="text-white font-black text-base uppercase tracking-wider mb-1.5 flex items-center gap-2">
+                                                    <span>Veriler Yükleniyor... (%{loadingProgress || 10})</span>
+                                                </h3>
+                                                
+                                                <p className="text-emerald-300 text-xs font-bold text-center max-w-md leading-relaxed bg-forest-900/80 px-4 py-2 rounded-xl border border-forest-700/80 mb-3.5 shadow-inner">
+                                                    {loadingStepText || 'Gelişmiş mesai ve yoklama verileri senkronize ediliyor...'}
+                                                </p>
+
+                                                {/* Percentage Progress Bar */}
+                                                <div className="w-full max-w-md bg-forest-900/90 rounded-full h-3 overflow-hidden p-0.5 border border-forest-700/60 mb-4 shadow-inner">
+                                                    <div 
+                                                        className="bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 h-full rounded-full transition-all duration-300 shadow-md"
+                                                        style={{ width: `${Math.max(loadingProgress || 10, 5)}%` }}
+                                                    />
+                                                </div>
+
+                                                {/* Step-by-Step Category Verification Checklist */}
+                                                <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold w-full max-w-md">
+                                                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${loadingProgress >= 45 ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300' : 'bg-forest-900/40 border-forest-800/40 text-forest-500'}`}>
+                                                        <Icon name={loadingProgress >= 45 ? "CheckCircle2" : "Circle"} size={13} className={loadingProgress >= 45 ? "text-emerald-400" : "text-forest-600"} />
+                                                        <span>1. Plansız Mesailer</span>
+                                                    </div>
+                                                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${loadingProgress >= 45 ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300' : 'bg-forest-900/40 border-forest-800/40 text-forest-500'}`}>
+                                                        <Icon name={loadingProgress >= 45 ? "CheckCircle2" : "Circle"} size={13} className={loadingProgress >= 45 ? "text-emerald-400" : "text-forest-600"} />
+                                                        <span>2. Planlı Görevler</span>
+                                                    </div>
+                                                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${loadingProgress >= 65 ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300' : 'bg-forest-900/40 border-forest-800/40 text-forest-500'}`}>
+                                                        <Icon name={loadingProgress >= 65 ? "CheckCircle2" : "Circle"} size={13} className={loadingProgress >= 65 ? "text-emerald-400" : "text-forest-600"} />
+                                                        <span>3. Bekleme Puanları</span>
+                                                    </div>
+                                                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${loadingProgress >= 85 ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300' : 'bg-forest-900/40 border-forest-800/40 text-forest-500'}`}>
+                                                        <Icon name={loadingProgress >= 85 ? "CheckCircle2" : "Circle"} size={13} className={loadingProgress >= 85 ? "text-emerald-400" : "text-forest-600"} />
+                                                        <span>4. İzin & FMİ Kullanımı</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="mt-3.5 flex items-center gap-2 text-[10px] font-bold text-forest-400">
+                                                    <Icon name="ShieldCheck" size={13} className="text-emerald-400" />
+                                                    <span>Tüm türler adım adım kontrol edildikten sonra sıfır yazılması kesinleştirilir.</span>
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div className={(loading || isRefreshing) ? "filter blur-md opacity-30 select-none pointer-events-none transition-all duration-300" : "transition-all duration-300"}>
+                                            <div className="overflow-x-auto">
                                         <table className="w-full text-sm text-left">
                                             <thead className="text-[11px] text-forest-400 uppercase font-black border-b border-forest-800">
                                                 <tr className="bg-forest-900/40">
@@ -4201,7 +4354,9 @@
                                             </div>
                                         )}
                                     </div>
-                                </Card>
+                                </div>
+                            </div>
+                        </Card>
                             </div>
                         </div>
                     )}
@@ -4964,6 +5119,7 @@
                                                             type="button"
                                                             onClick={() => {
                                                                 setFormData({...formData, personId: p.id});
+                                                                setSelectedPerson(p);
                                                                 setSearchTerm(p.fullName || '');
                                                             }}
                                                             className={`w-full text-left px-4 py-3 rounded-lg text-sm transition-all flex items-center justify-between group ${formData.personId === p.id ? 'bg-forest-600 text-white shadow-lg' : 'text-forest-400 hover:bg-forest-800 hover:text-forest-200'}`}
