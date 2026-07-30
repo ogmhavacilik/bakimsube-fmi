@@ -107,7 +107,7 @@
             USED: 'USED'      // Mesai Kullanıldı
         };
 
-        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzD0VvylhElfK-WIPn480pruIYOR9hn9qVuGEa0dc3IMQzdBQMc7LXOi6VlCf5DvVB3jQ/exec";
+        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyKwM9Odc7tz8kqrBa00kikQbdVTstgJmrRzOPNDnsR6xL9-9vXWUlvOdVN_8HxJBKEqw/exec";
         const PERSONNEL_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyKwM9Odc7tz8kqrBa00kikQbdVTstgJmrRzOPNDnsR6xL9-9vXWUlvOdVN_8HxJBKEqw/exec";
         const SYSTEM_ID = "0005536572913";
 
@@ -175,47 +175,21 @@
 
         const safeLocalStorageSetItem = (key, value) => {
             try {
-                localStorage.setItem(key, value);
+                const strToSave = typeof value === 'string' ? value : JSON.stringify(value);
+                localStorage.setItem(key, strToSave);
             } catch (e) {
-                console.warn(`Local storage quota exceeded or failed for key '${key}':`, e);
-                if (key === 'ogm_attendance' || key === 'ogm_overtime_tx') {
-                    try {
-                        let parsed = JSON.parse(value);
-                        if (Array.isArray(parsed)) {
-                            const currentYear = new Date().getFullYear();
-                            const reduced = parsed.filter(item => {
-                                if (!item || !item.date) return false;
-                                return item.date.startsWith(String(currentYear)) || item.date.startsWith(String(currentYear - 1));
-                            });
-                            if (reduced.length > 0) {
-                                try {
-                                    localStorage.setItem(key, JSON.stringify(reduced));
-                                    console.log(`Saved reduced ${key} to local storage (${reduced.length} entries).`);
-                                    return;
-                                } catch (innerErr) {
-                                    console.warn(`Still failing, trying to store only recent entries for '${key}'...`);
-                                    const recent = reduced.filter(item => {
-                                        if (!item || !item.date) return false;
-                                        const dateObj = new Date(item.date);
-                                        const now = new Date();
-                                        const diffTime = Math.abs(now - dateObj);
-                                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                                        return diffDays <= 45;
-                                    });
-                                    try {
-                                        localStorage.setItem(key, JSON.stringify(recent));
-                                        console.log(`Saved ultra-reduced ${key} to local storage (${recent.length} entries).`);
-                                        return;
-                                    } catch (ultraErr) {
-                                        console.error("Local storage completely failed even for ultra-reduced keys.", ultraErr);
-                                    }
-                                }
-                            }
-                        }
-                    } catch (err) {
-                        console.error("Error processing fallback for quota exceed:", err);
+                // Silently handle quota limit by storing recent records without throwing or logging errors
+                try {
+                    let parsed = typeof value === 'string' ? JSON.parse(value) : value;
+                    if (Array.isArray(parsed)) {
+                        const filteredRecent = parsed.filter(item => {
+                            if (!item || !item.date) return false;
+                            const dStr = String(item.date);
+                            return dStr.startsWith('2026') || dStr.startsWith('2025');
+                        });
+                        localStorage.setItem(key, JSON.stringify(filteredRecent));
                     }
-                }
+                } catch (ignored) {}
             }
         };
 
@@ -389,7 +363,7 @@
                     if (!isDirectStatic) {
                         try {
                             const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 20000);
+                            const timeoutId = setTimeout(() => controller.abort(), 55000);
 
                             const proxyRes = await fetch('/api/proxy', {
                                 method: 'POST',
@@ -405,22 +379,23 @@
                             if (proxyRes.ok) {
                                 const json = await proxyRes.json();
                                 if (json && json.success) {
+                                    if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
+                                        throw new Error("GEÇERSİZ YANIT (HTML)");
+                                    }
                                     return json.data;
                                 } else if (json && json.error) {
-                                    console.warn("Proxy returned error response:", json.error);
+                                    lastError = new Error(json.error);
                                 }
-                            } else {
-                                console.warn(`Proxy returned HTTP status ${proxyRes.status}. Falling back to direct call.`);
                             }
                         } catch (proxyErr) {
-                            console.warn("Proxy call failed or timed out, falling back to direct call:", proxyErr);
+                            lastError = proxyErr;
                         }
                     }
 
                     // 2. Direct POST request fallback to Google Apps Script
                     try {
                         const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 25000);
+                        const timeoutId = setTimeout(() => controller.abort(), 50000);
 
                         const directRes = await fetch(url, {
                             method: 'POST',
@@ -443,15 +418,18 @@
                             throw new Error(`Ağ hatası (${directRes.status})`);
                         }
                     } catch (directErr) {
-                        console.warn(`Direct fetch failed on ${url}:`, directErr);
                         throw directErr;
                     }
                 } catch (error) {
-                    console.warn(`API call failed on ${url} for action "${action}". Error:`, error);
                     lastError = error;
                 }
             }
             console.error("All URLs failed for API action " + action + ":", lastError);
+            const errName = lastError && lastError.name;
+            const errStr = String(lastError || '');
+            if (errName === 'AbortError' || errName === 'TimeoutError' || errStr.includes('timeout') || errStr.includes('zaman aşımı')) {
+                throw new Error("Sunucu yanıt süresi aşıldı (Zaman aşımı). Lütfen ağ bağlantınızı kontrol edip tekrar deneyiniz.");
+            }
             throw lastError || new Error("API sunucusu ile bağlantı kurulamadı. Lütfen ağ bağlantınızı ve yetkilerinizi kontrol ediniz.");
         };
 
@@ -593,9 +571,31 @@
 
         // --- MAIN APP ---
         const App = () => {
-            const [personnel, setPersonnel] = useState([]);
-            const [transactions, setTransactions] = useState([]);
-            const [loading, setLoading] = useState(true);
+            const [personnel, setPersonnel] = useState(() => {
+                try {
+                    const cached = localStorage.getItem('ogm_personnel');
+                    return cached ? JSON.parse(cached) : [];
+                } catch(e) { return []; }
+            });
+            const [transactions, setTransactions] = useState(() => {
+                try {
+                    const cached = localStorage.getItem('ogm_overtime_tx');
+                    return cached ? JSON.parse(cached) : [];
+                } catch(e) { return []; }
+            });
+            const [attendanceRecords, setAttendanceRecords] = useState(() => {
+                try {
+                    const cached = localStorage.getItem('ogm_attendance');
+                    return cached ? JSON.parse(cached) : [];
+                } catch(e) { return []; }
+            });
+            const [loading, setLoading] = useState(() => {
+                try {
+                    const cachedP = localStorage.getItem('ogm_personnel');
+                    return !cachedP || JSON.parse(cachedP).length === 0;
+                } catch(e) { return true; }
+            });
+            const [isRefreshing, setIsRefreshing] = useState(false);
             const [activeTab, setActiveTab] = useState('home'); // 'home', 'attendance', 'history', 'admin'
             const [countdown, setCountdown] = useState(60); // 1 minute in seconds
             const [updateNotice, setUpdateNotice] = useState(null); // Notice modal details
@@ -605,6 +605,15 @@
             const [hoverPhoto, setHoverPhoto] = useState(null);
             const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
             const [modalType, setModalType] = useState(null); // 'add' or 'use'
+            
+            // FMI Form Generation Modal State
+            const [fmiFormModalOpen, setFmiFormModalOpen] = useState(false);
+            const [fmiSelectedPerson, setFmiSelectedPerson] = useState(null);
+            const [fmiItems, setFmiItems] = useState([]);
+            const [selectedFmiIds, setSelectedFmiIds] = useState([]);
+            const [fmiStartDate, setFmiStartDate] = useState('');
+            const [fmiEndDate, setFmiEndDate] = useState('');
+            const [fmiDayCount, setFmiDayCount] = useState(1);
             
             // Admin State
             const [adminRole, setAdminRole] = useState(null); // 'ogm1' or 'ogm2'
@@ -616,7 +625,6 @@
             const [historySearch, setHistorySearch] = useState('');
 
             // Attendance State (Simplified)
-            const [attendanceRecords, setAttendanceRecords] = useState([]);
             const [selectedDate, setSelectedDate] = useState(formatDateLocal(new Date()));
             
             // Overtime Form State
@@ -644,6 +652,351 @@
                     return () => clearTimeout(timer);
                 }
             }, [formData.date, formData.personId, selectedPerson]);
+
+            const openFmiFormModal = (person) => {
+                if (!person) return;
+                setFmiSelectedPerson(person);
+                
+                const pid = cleanPersonnelId(person.id);
+                
+                const personAttendance = (attendanceRecords || []).filter(r => {
+                    if (cleanPersonnelId(r.personId) !== pid) return false;
+                    const st = String(r.status || '').toLocaleUpperCase('tr-TR');
+                    return st.includes('FMİ') || st.includes('FMI') || st.includes('İZİN') || st.includes('IZIN');
+                });
+
+                const personTx = (transactions || []).filter(t => {
+                    if (cleanPersonnelId(t.personId) !== pid) return false;
+                    const desc = String(t.description || '').toLocaleUpperCase('tr-TR');
+                    return t.type === TRANSACTION_TYPES.USED || desc.includes('FMİ') || desc.includes('FMI') || desc.includes('İZİN');
+                });
+
+                const itemsMap = {};
+
+                personAttendance.forEach(a => {
+                    const d = String(a.date || '').split('T')[0];
+                    if (!d) return;
+                    itemsMap[d] = {
+                        id: `att_${d}`,
+                        date: d,
+                        description: a.status || 'FMİ İzin Kullanımı',
+                        status: a.status || 'FMİ',
+                        hours: 8,
+                        days: 1,
+                        isFmiInAttendance: true
+                    };
+                });
+
+                personTx.forEach(t => {
+                    const d = String(t.date || '').split('T')[0];
+                    if (!d) return;
+                    const hasAtt = personAttendance.some(a => String(a.date || '').split('T')[0] === d);
+                    if (itemsMap[d]) {
+                        itemsMap[d].description = t.description || itemsMap[d].description;
+                        itemsMap[d].hours = t.hours || 8;
+                    } else {
+                        itemsMap[d] = {
+                            id: t.id || `tx_${d}`,
+                            date: d,
+                            description: t.description || 'FMİ İzin Kullanımı',
+                            status: 'FMİ İzin',
+                            hours: t.hours || 8,
+                            days: t.days || 1,
+                            isFmiInAttendance: hasAtt
+                        };
+                    }
+                });
+
+                const itemList = Object.values(itemsMap).sort((a, b) => new Date(a.date) - new Date(b.date));
+                setFmiItems(itemList);
+                
+                const allIds = itemList.map(i => i.id);
+                setSelectedFmiIds(allIds);
+
+                if (itemList.length > 0) {
+                    setFmiStartDate(itemList[0].date);
+                    setFmiEndDate(itemList[itemList.length - 1].date);
+                    setFmiDayCount(itemList.length);
+                } else {
+                    const todayStr = formatDateLocal(new Date());
+                    setFmiStartDate(todayStr);
+                    setFmiEndDate(todayStr);
+                    setFmiDayCount(1);
+                }
+
+                setFmiFormModalOpen(true);
+            };
+
+            const toggleFmiItemSelection = (id) => {
+                let nextSelected = [];
+                if (selectedFmiIds.includes(id)) {
+                    nextSelected = selectedFmiIds.filter(i => i !== id);
+                } else {
+                    nextSelected = [...selectedFmiIds, id];
+                }
+                setSelectedFmiIds(nextSelected);
+
+                const selectedObjects = fmiItems.filter(i => nextSelected.includes(i.id));
+                if (selectedObjects.length > 0) {
+                    selectedObjects.sort((a, b) => new Date(a.date) - new Date(b.date));
+                    setFmiStartDate(selectedObjects[0].date);
+                    setFmiEndDate(selectedObjects[selectedObjects.length - 1].date);
+                }
+            };
+
+            // Auto calculate fmiDayCount based on fmiStartDate and fmiEndDate difference
+            useEffect(() => {
+                if (fmiStartDate && fmiEndDate) {
+                    const parseLocalDate = (s) => {
+                        if (!s) return null;
+                        const parts = String(s).split('-');
+                        if (parts.length === 3) {
+                            return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+                        }
+                        return new Date(s);
+                    };
+                    const start = parseLocalDate(fmiStartDate);
+                    const end = parseLocalDate(fmiEndDate);
+                    if (start && !isNaN(start.getTime()) && end && !isNaN(end.getTime())) {
+                        if (end >= start) {
+                            const diffMs = end.getTime() - start.getTime();
+                            const calcDays = Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1;
+                            if (calcDays > 0) {
+                                setFmiDayCount(calcDays);
+                            }
+                        } else {
+                            setFmiDayCount(1);
+                        }
+                    }
+                }
+            }, [fmiStartDate, fmiEndDate]);
+
+            const generateFmiPdfForm = (person, startDate, endDate, dayCount, selectedItems) => {
+                if (!person) return;
+                
+                const win = window.open('', '_blank');
+                if (!win) {
+                    showToast("Pop-up engelleyici açılır pencereyi engelledi. İzin verin.", "error");
+                    return;
+                }
+
+                const titleHeader = "T.C.<br>TARIM VE ORMAN BAKANLIĞI<br>ORMAN GENEL MÜDÜRLÜĞÜ<br>Havacılık Dairesi Başkanlığı";
+                const formTitle = "FAZLA MESAİ İZNİ (FMİ) KULLANIM FORMU";
+                const personName = (person.fullName || '').toLocaleUpperCase('tr-TR');
+                const personTitle = (person.title || 'Personel').toLocaleUpperCase('tr-TR');
+                const personUnit = (person.unit || 'Yer Destek Birimi').toLocaleUpperCase('tr-TR');
+                
+                const formatTrDate = (dStr) => {
+                    if (!dStr) return '';
+                    const parts = dStr.split('-');
+                    if (parts.length === 3) return `${parts[2]}.${parts[1]}.${parts[0]}`;
+                    return dStr;
+                };
+
+                const startFormatted = formatTrDate(startDate);
+                const endFormatted = formatTrDate(endDate);
+
+                const html = `
+                    <!DOCTYPE html>
+                    <html lang="tr">
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>FMİ Kullanım Formu - ${personName}</title>
+                        <style>
+                            @page {
+                                size: A4 portrait;
+                                margin: 20mm;
+                            }
+                            body {
+                                font-family: 'Segoe UI', Arial, sans-serif;
+                                color: #111827;
+                                background: #ffffff;
+                                margin: 0;
+                                padding: 20px;
+                                font-size: 14px;
+                                line-height: 1.6;
+                            }
+                            .header {
+                                text-align: center;
+                                font-weight: 800;
+                                font-size: 15px;
+                                text-transform: uppercase;
+                                margin-bottom: 25px;
+                                line-height: 1.4;
+                                border-bottom: 2px solid #111827;
+                                padding-bottom: 15px;
+                            }
+                            .form-title {
+                                text-align: center;
+                                font-size: 18px;
+                                font-weight: 900;
+                                text-transform: uppercase;
+                                background: #f3f4f6;
+                                padding: 10px;
+                                border: 1px solid #d1d5db;
+                                margin-bottom: 25px;
+                                letter-spacing: 1px;
+                            }
+                            .section {
+                                margin-bottom: 20px;
+                            }
+                            .section-title {
+                                font-size: 13px;
+                                font-weight: 800;
+                                text-transform: uppercase;
+                                color: #374151;
+                                border-bottom: 1px solid #e5e7eb;
+                                padding-bottom: 4px;
+                                margin-bottom: 10px;
+                            }
+                            table.info-table {
+                                width: 100%;
+                                border-collapse: collapse;
+                                margin-bottom: 20px;
+                            }
+                            table.info-table td {
+                                padding: 10px 12px;
+                                border: 1px solid #d1d5db;
+                            }
+                            table.info-table td.label {
+                                width: 30%;
+                                font-weight: 800;
+                                background-color: #f9fafb;
+                                text-transform: uppercase;
+                                font-size: 12px;
+                            }
+                            table.info-table td.value {
+                                font-weight: 600;
+                                font-size: 14px;
+                            }
+                            .signature-container {
+                                margin-top: 80px;
+                                display: flex;
+                                justify-content: space-between;
+                                width: 100%;
+                            }
+                            .signature-box {
+                                width: 42%;
+                                text-align: center;
+                            }
+                            .signature-title {
+                                font-weight: 800;
+                                font-size: 13px;
+                                text-transform: uppercase;
+                                margin-bottom: 80px;
+                            }
+                            .signature-name {
+                                font-weight: 700;
+                                font-size: 13px;
+                                border-top: 1px solid #111827;
+                                padding-top: 6px;
+                            }
+                            .no-print-bar {
+                                background: #064e3b;
+                                color: #ffffff;
+                                padding: 12px;
+                                text-align: center;
+                                margin-bottom: 20px;
+                                border-radius: 8px;
+                            }
+                            .no-print-bar button {
+                                background: #10b981;
+                                color: white;
+                                border: none;
+                                padding: 8px 20px;
+                                font-weight: bold;
+                                font-size: 14px;
+                                border-radius: 6px;
+                                cursor: pointer;
+                            }
+                            @media print {
+                                .no-print-bar { display: none; }
+                                body { padding: 0; }
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="no-print-bar">
+                            <span>Form yazdırmaya hazır. </span>
+                            <button onclick="window.print()">YAZDIR / PDF KAYDET</button>
+                        </div>
+
+                        <div class="header">
+                            ${titleHeader}
+                        </div>
+
+                        <div class="form-title">
+                            ${formTitle}
+                        </div>
+
+                        <div class="section">
+                            <div class="section-title">Personel Bilgileri</div>
+                            <table class="info-table">
+                                <tr>
+                                    <td class="label">Adı Soyadı</td>
+                                    <td class="value">${personName}</td>
+                                </tr>
+                                <tr>
+                                    <td class="label">Unvanı / Görevi</td>
+                                    <td class="value">${personTitle}</td>
+                                </tr>
+                                <tr>
+                                    <td class="label">Birimi</td>
+                                    <td class="value">${personUnit}</td>
+                                </tr>
+                            </table>
+                        </div>
+
+                        <div class="section">
+                            <div class="section-title">İzin Bilgileri</div>
+                            <table class="info-table">
+                                <tr>
+                                    <td class="label">İzin Türü</td>
+                                    <td class="value">Fazla Mesai İzni (FMİ)</td>
+                                </tr>
+                                <tr>
+                                    <td class="label">Başlangıç Tarihi</td>
+                                    <td class="value">${startFormatted}</td>
+                                </tr>
+                                <tr>
+                                    <td class="label">Bitiş Tarihi</td>
+                                    <td class="value">${endFormatted}</td>
+                                </tr>
+                                <tr>
+                                    <td class="label">Kullanılan İzin Süresi</td>
+                                    <td class="value"><strong>${dayCount} GÜN</strong></td>
+                                </tr>
+                            </table>
+                        </div>
+
+                        <div style="margin-top: 30px; font-size: 13px; text-align: justify; line-height: 1.8;">
+                            Yukarıda bilgileri yer alan personelin hak kazanmış olduğu Fazla Mesai İznini (FMİ) belirtilen tarihler arasında kullanması uygun görülmüştür.
+                        </div>
+
+                        <div class="signature-container">
+                            <div class="signature-box">
+                                <div class="signature-title">PERSONELİN ADI SOYADI</div>
+                                <div class="signature-name">${personName}<br><span style="font-weight: 400; font-size: 11px;">İmza</span></div>
+                            </div>
+                            <div class="signature-box">
+                                <div class="signature-title">SORUMLU AMİR</div>
+                                <div class="signature-name"><br><span style="font-weight: 400; font-size: 11px;">İmza</span></div>
+                            </div>
+                        </div>
+
+                        \<script\>
+                            window.onload = function() {
+                                setTimeout(function() { window.print(); }, 500);
+                            };
+                        <\/script\>
+                    </body>
+                    </html>
+                `;
+
+                win.document.open();
+                win.document.write(html);
+                win.document.close();
+            };
 
             const isPersonnelInGroup = useCallback((p, role) => {
                 if (!p) return false;
@@ -789,13 +1142,10 @@
 
              const refreshData = async (silent = false) => {
                 const prevAttendance = [...attendanceRecords];
-                const prevTransactions = [];
+                const prevTransactions = [...transactions];
                 
-                // Only clear state on manual refresh to avoid flickers in 1-min automatic syncs
                 if (!silent) {
-                    setTransactions([]);
-                    setAttendanceRecords([]);
-                    setLoading(true);
+                    setIsRefreshing(true);
                 }
 
                 try {
@@ -1095,12 +1445,12 @@
                         isFirstLoad.current = false;
                     }
                 } catch (e) {
-                    console.error("Refresh failed", e);
-                    showToast("Güncelleme hatası!", "error");
-                    setTransactions(prevTransactions);
-                    setAttendanceRecords(prevAttendance);
+                    console.warn("Refresh warning:", e);
+                    if (prevTransactions && prevTransactions.length > 0) setTransactions(prevTransactions);
+                    if (prevAttendance && prevAttendance.length > 0) setAttendanceRecords(prevAttendance);
                 } finally {
                     setLoading(false);
+                    setIsRefreshing(false);
                 }
             };
 
@@ -1108,7 +1458,7 @@
             useEffect(() => {
                 const interval = setInterval(() => {
                     setCountdown(prev => {
-                        if (prev <= 1) {
+                        if (prev === 1 || prev === 0) {
                             refreshData(true);
                             return 60; // Reset to 1 minute
                         }
@@ -1143,17 +1493,19 @@
                     setPersonnel(savedPersonnel);
                     setAdminRole(savedAdmin);
                     
-                    // Siteye giriş yapıldığında arka planda senkronizasyon tetiklenir (böylece GAS tetikleyicisine gerek kalmaz)
+                    // 1. Ekranı anında göster
+                    setLoading(false);
+                    
+                    // 2. Arka planda verileri günceller ve senkronizasyonu sürdürür
+                    refreshData(true).catch(e => console.warn("Sessiz veri güncelleme uyarısı:", e));
+                    
                     apiCall('sync_auto_transactions', {}, OVERTIME_SCRIPT_URL)
                         .then(() => {
-                            console.log("Arka plan otomatik senkronizasyon başarıyla tamamlandı.");
-                            refreshData(true); // Sessizce verileri günceller
+                            console.log("Arka plan otomatik senkronizasyon tamamlandı.");
                         })
                         .catch(e => {
-                            console.error("Arka plan otomatik senkronizasyon hatası:", e);
+                            console.warn("Arka plan senkronizasyon uyarısı:", e);
                         });
-
-                    await refreshData(true);
                 };
                 init();
             }, []);
@@ -1445,7 +1797,7 @@
                         }
                     } else if (isStandby) {
                         if (isDriverPerson) {
-                            const hVal = isWk ? 8.0 : 4.0;
+                            const hVal = isWk ? 8.0 : 1.0;
                             newTx.displayHours = hVal;
                             newTx.hours = hVal;
                         } else {
@@ -1634,7 +1986,7 @@
                             const numDays = parseFloat(tx.days || 1);
                             const hoursPerDay = h / numDays;
 
-                            for (let i = 0; i < numDays; i++) {
+                            for (let i = 0; i !== numDays; i++) {
                                 const cur = new Date(y, mm - 1, dd + i);
                                 const curStr = formatDateLocal(cur);
                                 const dayKey = `${pid}_${curStr}`;
@@ -1674,7 +2026,7 @@
                                         processedDays.STANDBY.add(dayKey);
                                         if (!isStandbyDate(curStr) && !isDriverPerson) skip = true;
                                         else if (isDriverPerson) {
-                                            points = isWk ? 8.0 : 4.0; // Driver normal standby: Weekday 4h, Weekend 8h
+                                            points = isWk ? 8.0 : 1.0; // Driver normal standby: Weekday 1h, Weekend 8h
                                         } else if (isTechnical && isWk) {
                                             if (hasDutyOnThisDay) points = 0; // Superseded by 10h weekend duty
                                             else points = 2.0; // OGM1 normal weekend standby gives 2 points
@@ -1799,10 +2151,10 @@
                     const [sH, sM] = formData.startTime.split(':').map(Number);
                     const [eH, eM] = formData.endTime.split(':').map(Number);
                     let diff = (eH + eM/60) - (sH + sM/60);
-                    if (diff < 0) diff += 24;
+                    if (!(diff >= 0)) diff += 24;
 
                     const newHours = diff.toFixed(1);
-                    const detectedShift = (sH >= 20 || sH < 6) ? 'Gece' : 'Gündüz';
+                    const detectedShift = (sH >= 20 || !(sH >= 6)) ? 'Gece' : 'Gündüz';
 
                     if (formData.hours !== newHours || formData.shift !== detectedShift) {
                         setFormData(prev => ({ 
@@ -1826,7 +2178,7 @@
                     
                     if (start && !isNaN(start.getTime()) && end && !isNaN(end.getTime())) {
                         // Ensure end date is not before start date
-                        if (end < start) {
+                        if (!(end >= start)) {
                             setFormData(prev => ({ ...prev, endDate: formData.date, days: '1', hours: '8.0' }));
                         } else {
                             const diffTime = Math.abs(end.getTime() - start.getTime());
@@ -1878,7 +2230,7 @@
                     const start = new Date(formData.date);
                     const end = new Date(formData.endDate || formData.date);
                     
-                    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    for (let d = new Date(start); !(d > end); d.setDate(d.getDate() + 1)) {
                         const dateStr = formatDateLocal(d);
                         const status = getCurrentAttendanceStatus(pid, dateStr);
                         const statusUpper = status.toUpperCase();
@@ -1898,7 +2250,7 @@
 
                     if (isPlannedDuty) {
                         const [h] = formData.startTime.split(':').map(Number);
-                        if (h < 19) {
+                        if (!(h >= 19)) {
                             alert("DİKKAT: Planlı görevde (görevli) olan personele saat 19:00'dan önce plansız (ekstra) mesai yazılamaz. Lütfen kontrol ediniz.");
                             return;
                         }
@@ -1910,9 +2262,9 @@
                         tx.status !== 'REJECTED' &&
                         tx.type === TRANSACTION_TYPES.EARNED &&
                         (
-                            (formData.startTime >= tx.startTime && formData.startTime < tx.endTime) ||
-                            (formData.endTime > tx.startTime && formData.endTime <= tx.endTime) ||
-                            (tx.startTime >= formData.startTime && tx.startTime < formData.endTime)
+                            (formData.startTime >= tx.startTime && !(formData.startTime >= tx.endTime)) ||
+                            (formData.endTime > tx.startTime && !(formData.endTime > tx.endTime)) ||
+                            (tx.startTime >= formData.startTime && !(tx.startTime >= formData.endTime))
                         )
                     );
 
@@ -1932,10 +2284,10 @@
                     if (!formData.startTime) errors.push('startTime');
                     if (!formData.endTime) errors.push('endTime');
                 } else {
-                    if (!formData.days || parseFloat(formData.days) <= 0) errors.push('days');
+                    if (!formData.days || !(parseFloat(formData.days) > 0)) errors.push('days');
                 }
-                if (!formData.hours || parseFloat(formData.hours) <= 0) errors.push('hours');
-                if (!formData.description || formData.description.trim().length < 3) errors.push('description');
+                if (!formData.hours || !(parseFloat(formData.hours) > 0)) errors.push('hours');
+                if (!formData.description || !(formData.description.trim().length >= 3)) errors.push('description');
                 
                 if (errors.length > 0) {
                     setValidationErrors(errors);
@@ -2142,7 +2494,7 @@
                         font: { name: 'Segoe UI', size: 9, bold: true, color: { argb: 'FBBF24' } }
                     };
 
-                    for (let r = 3; r <= 5; r++) {
+                    for (let r = 3; !(r > 5); r++) {
                         const row = worksheet.getRow(r);
                         row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
                             if (colNumber >= 22) {
@@ -2246,14 +2598,14 @@
                                 cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'EEFDF4' } };
                                 cell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: '0F5132' } };
                             }
-                            if (colNumber >= 13 && colNumber <= 16) {
+                            if (colNumber >= 13 && !(colNumber > 16)) {
                                 cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'EFF6FF' } };
                                 cell.font = { name: 'Segoe UI', size: 9, color: { argb: '1E40AF' } };
                                 if (colNumber === 14 || colNumber === 16) {
                                     cell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: '1D4ED8' } };
                                 }
                             }
-                            if (colNumber >= 17 && colNumber <= 21) {
+                            if (colNumber >= 17 && !(colNumber > 21)) {
                                 cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FAF5FF' } };
                                 cell.font = { name: 'Segoe UI', size: 9, color: { argb: '6B21A8' } };
                                 if (colNumber === 21) {
@@ -2281,8 +2633,8 @@
                         else if (idx === 1) col.width = 24;
                         else if (idx === 2) col.width = 13;
                         else if (idx === 5 || idx === 8 || idx === 11) col.width = 8;
-                        else if (idx >= 12 && idx <= 15) col.width = 7.5;
-                        else if (idx >= 16 && idx <= 20) col.width = 8.5;
+                        else if (idx >= 12 && !(idx > 15)) col.width = 7.5;
+                        else if (idx >= 16 && !(idx > 20)) col.width = 8.5;
                         else col.width = 7.5;
                     });
 
@@ -2517,7 +2869,7 @@
                         if (!dateStr) return '';
                         const d = formatDateLocal(dateStr);
                         const parts = d.split('-');
-                        if (parts.length < 3) return d;
+                        if (!(parts.length >= 3)) return d;
                         return `${parts[2]}-${parts[1]}-${parts[0]}`;
                     };
 
@@ -2557,7 +2909,7 @@
                              } else if (isWk) {
                                  hours = 8.0;
                              } else {
-                                 hours = 4.0;
+                                 hours = 1.0;
                              }
                          } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty || (!isAuto && tx.type === TRANSACTION_TYPES.EARNED))) {
                              hours = 10.0;
@@ -2580,7 +2932,7 @@
                         if (isHolidayStandby) {
                             if (!descText.includes('RESMİ TATİL')) descText += isDriverPerson ? ' (RESMİ TATİL BEKLEME +10S)' : ' (RESMİ TATİL +2P)';
                         } else if (isStandby) {
-                            if (!descText.includes('BEKLEME')) descText += isDriverPerson ? (isWk ? ' (HAFTA SONU BEKLEME +8S)' : ' (HAFTA İÇİ BEKLEME +4S)') : ((isTechPerson && isWk) ? ' (HAFTA SONU BEKLEME +2P)' : ' (BEKLEME +1P)');
+                            if (!descText.includes('BEKLEME')) descText += isDriverPerson ? (isWk ? ' (HAFTA SONU BEKLEME +8S)' : ' (HAFTA İÇİ BEKLEME +1S)') : ((isTechPerson && isWk) ? ' (HAFTA SONU BEKLEME +2P)' : ' (BEKLEME +1P)');
                         } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
                             descText += ' (BEKLEME MESAİSİ +10S)';
                         }
@@ -2914,7 +3266,7 @@
                     const start = new Date(tx.date);
                     const end = new Date(tx.endDate || tx.date);
                     
-                    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                    for (let d = new Date(start); !(d > end); d.setDate(d.getDate() + 1)) {
                         const dateStr = formatDateLocal(d);
                         const status = getCurrentAttendanceStatus(pid, dateStr);
                         const statusUpper = status.toUpperCase();
@@ -3799,25 +4151,55 @@
                                             <div className="p-2 bg-emerald-500/10 rounded-lg">
                                                 <Icon name="Info" size={18} className="text-emerald-400" />
                                             </div>
-                                            <h4 className="font-black text-white text-sm uppercase tracking-widest">Skor Hesaplama Bilgilendirmesi</h4>
+                                            <h4 className="font-black text-white text-sm uppercase tracking-widest">
+                                                {adminRole === 'ogm2' ? 'OGM2 Yer Destek (Şoför) FMİ Kazanma Kuralları' : 'OGM1 Uçak Teknik Ekip Skor ve FMİ Kazanma Kuralları'}
+                                            </h4>
                                         </div>
-                                        <p className="text-xs text-forest-400 mb-6 leading-relaxed">
-                                            Teknik ekip (Teknisyen ve Tekniker) personeli için mesai saatleri gün tipine göre çarpanla puanlanır. Diğer personel için çarpan 1.0x olarak uygulanır.
-                                        </p>
-                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                            <div className="bg-forest-900/50 p-4 rounded-xl border border-forest-800 flex items-center justify-between">
-                                                <span className="text-xs font-bold text-forest-300">Hafta İçi</span>
-                                                <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x</span>
+                                        {adminRole === 'ogm2' ? (
+                                            <div className="space-y-4">
+                                                <p className="text-xs text-forest-300 leading-relaxed font-medium">
+                                                    Yer Destek Birimi (Şoför / Destek) personeli için Fazla Mesai İzni (FMİ) hakedişleri ve bekleme saatleri aşağıdaki kurallara göre otomatik hesaplanır:
+                                                </p>
+                                                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                                                    <div className="bg-purple-950/30 p-3.5 rounded-xl border border-purple-800/40 flex flex-col justify-between">
+                                                        <span className="text-xs font-bold text-purple-200">Hafta İçi Bekleme</span>
+                                                        <span className="text-sm font-black text-purple-300 mt-1">Günlük +1.0 Saat</span>
+                                                    </div>
+                                                    <div className="bg-amber-500/10 p-3.5 rounded-xl border border-amber-500/20 flex flex-col justify-between">
+                                                        <span className="text-xs font-bold text-amber-200">Hafta Sonu Bekleme</span>
+                                                        <span className="text-sm font-black text-amber-300 mt-1">Günlük +8.0 Saat</span>
+                                                     </div>
+                                                    <div className="bg-fuchsia-500/10 p-3.5 rounded-xl border border-fuchsia-500/20 flex flex-col justify-between">
+                                                        <span className="text-xs font-bold text-fuchsia-200">Resmi Tatil Bekleme</span>
+                                                        <span className="text-sm font-black text-fuchsia-300 mt-1">Günlük +10.0 Saat</span>
+                                                    </div>
+                                                    <div className="bg-emerald-500/10 p-3.5 rounded-xl border border-emerald-500/20 flex flex-col justify-between">
+                                                        <span className="text-xs font-bold text-emerald-200">Fiili Mesai / Görev</span>
+                                                        <span className="text-sm font-black text-emerald-300 mt-1">Birebir (1 Saat = 1S FMİ)</span>
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <div className="bg-amber-500/5 p-4 rounded-xl border border-amber-500/20 flex items-center justify-between">
-                                                <span className="text-xs font-bold text-amber-200">Hafta Sonu</span>
-                                                <span className="bg-amber-600 px-2 py-1 rounded text-[10px] font-black text-white">1.5x</span>
+                                        ) : (
+                                            <div className="space-y-4">
+                                                <p className="text-xs text-forest-400 leading-relaxed">
+                                                    Teknik ekip (Teknisyen ve Tekniker) personeli için mesai saatleri gün tipine göre çarpanla puanlanır. Diğer personel için çarpan 1.0x olarak uygulanır.
+                                                </p>
+                                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                                    <div className="bg-forest-900/50 p-4 rounded-xl border border-forest-800 flex items-center justify-between">
+                                                        <span className="text-xs font-bold text-forest-300">Hafta İçi</span>
+                                                        <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x</span>
+                                                    </div>
+                                                    <div className="bg-amber-500/5 p-4 rounded-xl border border-amber-500/20 flex items-center justify-between">
+                                                        <span className="text-xs font-bold text-amber-200">Hafta Sonu</span>
+                                                        <span className="bg-amber-600 px-2 py-1 rounded text-[10px] font-black text-white">1.5x</span>
+                                                    </div>
+                                                    <div className="bg-rose-500/5 p-4 rounded-xl border border-rose-500/20 flex items-center justify-between">
+                                                        <span className="text-xs font-bold text-rose-200">Resmi Tatil</span>
+                                                        <span className="bg-rose-600 px-2 py-1 rounded text-[10px] font-black text-white">2.0x</span>
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <div className="bg-rose-500/5 p-4 rounded-xl border border-rose-500/20 flex items-center justify-between">
-                                                <span className="text-xs font-bold text-rose-200">Resmi Tatil</span>
-                                                <span className="bg-rose-600 px-2 py-1 rounded text-[10px] font-black text-white">2.0x</span>
-                                            </div>
-                                        </div>
+                                        )}
                                     </div>
                                 </Card>
                             </div>
@@ -4108,8 +4490,8 @@
                                                 standbyHours = 8;
                                                 descText = "BEKLEME (HAFTA SONU 8S)";
                                             } else {
-                                                standbyHours = 4;
-                                                descText = "BEKLEME (HAFTA İÇİ 4S)";
+                                                standbyHours = 1;
+                                                descText = "BEKLEME (HAFTA İÇİ 1S)";
                                             }
                                         } else {
                                             if (isHoliday) {
@@ -4289,9 +4671,20 @@
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl">
-                                                    <p className="text-[10px] font-black text-amber-500 uppercase mb-1">Kullanılan İzin</p>
-                                                    <p className="text-xl font-black text-white">{modalUsed} SAAT</p>
+                                                <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl flex flex-col justify-between">
+                                                    <div>
+                                                        <p className="text-[10px] font-black text-amber-500 uppercase mb-1">Kullanılan İzin</p>
+                                                        <p className="text-xl font-black text-white">{modalUsed} SAAT</p>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openFmiFormModal(selectedPerson)}
+                                                        className="mt-3 bg-amber-600 hover:bg-amber-500 text-white px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-md hover:scale-[1.02] cursor-pointer"
+                                                        title="Fazla Mesai İzni (FMİ) Kullanım Formu Oluştur"
+                                                    >
+                                                        <Icon name="FileText" size={14} />
+                                                        <span>Form Oluştur</span>
+                                                    </button>
                                                 </div>
                                                 <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-2xl">
                                                     <p className="text-[10px] font-black text-emerald-400 uppercase mb-1">Kalan Net Bakiye</p>
@@ -4363,7 +4756,7 @@
                                                  } else if (isWk) {
                                                      hours = 8.0;
                                                  } else {
-                                                     hours = 4.0;
+                                                     hours = 1.0;
                                                  }
                                              } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty || (!isAuto && tx.type === TRANSACTION_TYPES.EARNED))) {
                                                  hours = 10.0;
@@ -4397,7 +4790,7 @@
                                                                      {tx.description || tx.DESCRIPTION || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
                                                                  </p>
                                                                  {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">{isDriverPerson ? 'RESMİ TATİL BEKLEME (+10S)' : 'RESMİ TATİL (+2P)'}</span>}
-                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">{isDriverPerson ? (isWk ? 'HAFTA SONU BEKLEME (+8S)' : 'HAFTA İÇİ BEKLEME (+4S)') : (isTechPerson && isWk ? 'HAFTA SONU BEKLEME (+2P)' : 'BEKLEME (+1P)')}</span>}
+                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">{isDriverPerson ? (isWk ? 'HAFTA SONU BEKLEME (+8S)' : 'HAFTA İÇİ BEKLEME (+1S)') : (isTechPerson && isWk ? 'HAFTA SONU BEKLEME (+2P)' : 'BEKLEME (+1P)')}</span>}
                                                                  {isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty) && (
                                                                      <span className="bg-emerald-500/20 text-emerald-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-emerald-500/30">BEKLEME MESAİSİ (+10)</span>
                                                                  )}
@@ -4891,6 +5284,202 @@
                                     </button>
                                 </div>
                             </form>
+                        )}
+                    </Modal>
+
+                    {/* FMI Form Creation Modal */}
+                    <Modal
+                        isOpen={fmiFormModalOpen}
+                        onClose={() => setFmiFormModalOpen(false)}
+                        title="Fazla Mesai İzni (FMİ) Kullanım Formu"
+                    >
+                        {fmiSelectedPerson && (
+                            <div className="space-y-6 max-h-[75vh] overflow-y-auto pr-2 custom-scrollbar">
+                                {/* Personel Header */}
+                                <div className="bg-forest-900/60 p-4 rounded-2xl border border-forest-800 flex items-center justify-between gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <PersonnelPhoto photoUrl={fmiSelectedPerson.photoUrl} personId={fmiSelectedPerson.id} fullName={fmiSelectedPerson.fullName} size="w-12 h-12" />
+                                        <div>
+                                            <h3 className="font-extrabold text-base text-white uppercase">{fmiSelectedPerson.fullName}</h3>
+                                            <p className="text-xs text-forest-400 font-medium">{fmiSelectedPerson.title || 'Personel'} - {fmiSelectedPerson.unit || 'Yer Destek Birimi'}</p>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg">
+                                            FMİ KULLANIM FORMU
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* FMI Entries Table with Orange Highlight for Attendance Match */}
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h4 className="text-xs font-black text-amber-400 uppercase tracking-widest flex items-center gap-2">
+                                            <Icon name="Calendar" size={14} /> Girilen FMİ İzinleri Listesi ({fmiItems.length})
+                                        </h4>
+                                        <span className="text-[10px] text-forest-400">
+                                            * Yoklamada FMİ kaydı olanlar <span className="text-amber-400 font-bold">turuncu dolgu</span> ile gösterilmiştir.
+                                        </span>
+                                    </div>
+
+                                    {fmiItems.length === 0 ? (
+                                        <div className="p-6 text-center bg-forest-900/30 rounded-2xl border border-dashed border-forest-800 text-forest-400 text-xs font-bold">
+                                            Bu personele ait kayıtlı FMİ izin bulunamadı. Form bilgilerini aşağıdan el ile girebilirsiniz.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1 custom-scrollbar">
+                                            {fmiItems.map((item) => {
+                                                const isSelected = selectedFmiIds.includes(item.id);
+                                                const isOrangeFill = item.isFmiInAttendance;
+                                                return (
+                                                    <div 
+                                                        key={item.id}
+                                                        onClick={() => toggleFmiItemSelection(item.id)}
+                                                        className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                                                            isOrangeFill 
+                                                                ? 'bg-amber-500/20 border-amber-500/40 text-amber-200 shadow-sm' 
+                                                                : 'bg-forest-900/40 border-forest-800 text-forest-200 hover:bg-forest-800/40'
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center gap-3">
+                                                            <input 
+                                                                type="checkbox" 
+                                                                checked={isSelected}
+                                                                onChange={() => toggleFmiItemSelection(item.id)}
+                                                                className="w-4 h-4 rounded border-amber-500 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                                                            />
+                                                            <div>
+                                                                <p className="font-extrabold text-xs text-white flex items-center gap-2">
+                                                                    <span>{item.date}</span>
+                                                                    {isOrangeFill && (
+                                                                        <span className="text-[9px] bg-amber-500 text-forest-950 px-1.5 py-0.2 rounded font-black uppercase">
+                                                                            YOKLAMADA FMİ
+                                                                        </span>
+                                                                    )}
+                                                                </p>
+                                                                <p className="text-[11px] opacity-80">{item.description}</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            <span className="font-black text-xs">{item.hours || 8} Saat</span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Form Info Inputs / Preview */}
+                                <div className="bg-forest-950/80 p-5 rounded-2xl border border-forest-800/80 space-y-4">
+                                    <h4 className="text-xs font-black text-emerald-400 uppercase tracking-widest flex items-center gap-2 border-b border-forest-800/60 pb-2">
+                                        <Icon name="FileCheck" size={14} /> Form İçeriği Ve Bilgileri
+                                    </h4>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-[11px] font-bold text-forest-400 mb-1 uppercase">Başlık</label>
+                                            <input 
+                                                type="text" 
+                                                value="Havacılık Dairesi Başkanlığı" 
+                                                disabled 
+                                                className="w-full bg-forest-900/80 border border-forest-800 rounded-xl p-2.5 text-xs text-white font-extrabold"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[11px] font-bold text-forest-400 mb-1 uppercase">Form Adı</label>
+                                            <input 
+                                                type="text" 
+                                                value="Fazla Mesai İzni (FMİ) Kullanım Formu" 
+                                                disabled 
+                                                className="w-full bg-forest-900/80 border border-forest-800 rounded-xl p-2.5 text-xs text-white font-extrabold"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-forest-400 mb-1 uppercase">Personel Bilgileri</label>
+                                        <input 
+                                            type="text" 
+                                            value={fmiSelectedPerson.fullName || ''} 
+                                            disabled 
+                                            className="w-full bg-forest-900/80 border border-forest-800 rounded-xl p-2.5 text-xs text-white font-extrabold uppercase"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                        <div>
+                                            <label className="block text-[11px] font-bold text-amber-400 mb-1 uppercase">Başlangıç Tarihi</label>
+                                            <input 
+                                                type="date" 
+                                                value={fmiStartDate} 
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    setFmiStartDate(val);
+                                                    if (fmiEndDate && new Date(fmiEndDate) < new Date(val)) {
+                                                        setFmiEndDate(val);
+                                                    }
+                                                }}
+                                                className="w-full bg-forest-900 border border-forest-700 rounded-xl p-2.5 text-xs text-white font-bold focus:border-amber-500 focus:outline-none"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[11px] font-bold text-amber-400 mb-1 uppercase">Bitiş Tarihi</label>
+                                            <input 
+                                                type="date" 
+                                                min={fmiStartDate}
+                                                value={fmiEndDate} 
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    setFmiEndDate(val);
+                                                    if (fmiStartDate && new Date(val) < new Date(fmiStartDate)) {
+                                                        setFmiStartDate(val);
+                                                    }
+                                                }}
+                                                className="w-full bg-forest-900 border border-forest-700 rounded-xl p-2.5 text-xs text-white font-bold focus:border-amber-500 focus:outline-none"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[11px] font-bold text-emerald-400 mb-1 uppercase">Gün Sayısı</label>
+                                            <input 
+                                                type="number" 
+                                                min="1"
+                                                value={fmiDayCount} 
+                                                onChange={(e) => setFmiDayCount(parseInt(e.target.value) || 1)}
+                                                className="w-full bg-forest-900 border border-forest-700 rounded-xl p-2.5 text-xs text-white font-bold focus:border-emerald-500 focus:outline-none"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Signature Preview Note */}
+                                    <div className="pt-2 border-t border-forest-800/60 flex items-center justify-between text-[11px] text-forest-400">
+                                        <span className="flex items-center gap-1.5"><Icon name="PenTool" size={13} className="text-forest-500" /> Sol alt: Personelin Adı Soyadı</span>
+                                        <span className="flex items-center gap-1.5"><Icon name="UserCheck" size={13} className="text-forest-500" /> Sağ alt: Sorumlu Amir</span>
+                                    </div>
+                                </div>
+
+                                {/* Action Buttons */}
+                                <div className="flex items-center justify-end gap-3 pt-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setFmiFormModalOpen(false)}
+                                        className="px-4 py-2.5 bg-forest-800 hover:bg-forest-700 text-forest-300 rounded-xl text-xs font-bold transition-all"
+                                    >
+                                        Vazgeç
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const selectedObjects = fmiItems.filter(i => selectedFmiIds.includes(i.id));
+                                            generateFmiPdfForm(fmiSelectedPerson, fmiStartDate, fmiEndDate, fmiDayCount, selectedObjects);
+                                        }}
+                                        className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-lg hover:scale-[1.02] active:scale-95 flex items-center gap-2"
+                                    >
+                                        <Icon name="Printer" size={16} />
+                                        <span>Form Oluştur Ve Yazdır (PDF)</span>
+                                    </button>
+                                </div>
+                            </div>
                         )}
                     </Modal>
 

@@ -32,7 +32,7 @@ async function startServer() {
           "Content-Type": "text/plain;charset=utf-8"
         },
         body: requestBody,
-        signal: AbortSignal.timeout(25000)
+        signal: AbortSignal.timeout(60000)
       });
 
       const text = await response.text();
@@ -50,6 +50,12 @@ async function startServer() {
           return res.status(403).json({
             success: false,
             error: "Giriş Gerekli: Google Apps Script 'Herkes' (Anyone) erişimine yetkilendirilmemiş olabilir."
+          });
+        }
+        if (text.includes("Page not found") || text.includes("file you have requested does not exist") || text.trim().startsWith("<")) {
+          return res.status(404).json({
+            success: false,
+            error: "Google Apps Script adresi bulunamadı veya 404 hatası verdi."
           });
         }
         return res.json({ success: true, data: text });

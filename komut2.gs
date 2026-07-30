@@ -305,14 +305,11 @@ function handleSaveOvertime(payload) {
     saveOrUpdateManualToPlansizSheet(tx, "SAVE");
     
     const typeValue = String(tx.type || "").toUpperCase();
-    const isUsedOrFmi = typeValue.includes("USED") || 
-                        typeValue.includes("İZİN") || 
-                        typeValue.includes("IZIN") || 
-                        typeValue.includes("FMİ") || 
-                        typeValue.includes("FMI");
+    const desc = String(tx.description || tx.note || "").toUpperCase();
+    const isUsed = typeValue === "USED" || typeValue.includes("İZİN") || typeValue.includes("IZIN") || desc.includes("KULLANIM") || desc.includes("KULLANILAN");
 
-    // Only write to attendance if APPROVED (typically it starts as PENDING)
-    if (tx.status === 'APPROVED' && isUsedOrFmi) {
+    // SADECE onaylı VE KULLANILAN İZİN (USED) ise yoklamaya yaz. FMİ Girişinde (Earned / Kazanım) buraya yazılmaz.
+    if (tx.status === 'APPROVED' && isUsed) {
       writeToAttendance(tx);
     }
     logAction("MESAI_KAYDI", `Yeni kayıt (Plansız): ${tx.personName}`, payload.user);
@@ -538,9 +535,9 @@ function writeToAttendance(tx) {
   const typeValue = String(getProp(tx, "type") || getProp(tx, "tip") || "").toUpperCase();
   const desc = String(getProp(tx, "description") || getProp(tx, "note") || "").toUpperCase();
 
-  // BİR FMİ GİRİŞİNDE (KAZANIM) ASLA VE ASLA YOKLAMAYA AKTARMA YOK. SADECE KULLANILAN FMİ İZNİ (USED) AKTARILACAK.
+  // BİR FMİ GİRİŞİNDE (KAZANIM / EARNED) ASLA VE ASLA YOKLAMAYA AKTARMA YOK. SADECE KULLANILAN FMİ İZNİ (USED) AKTARILACAK.
   const isFmi = desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ') || String(getProp(tx, "id") || "").toLowerCase().includes("fmi");
-  const isEarned = typeValue === "EARNED" || typeValue.includes("KAZANIM") || typeValue.includes("ÖDEME");
+  const isEarned = typeValue === "EARNED" || typeValue.includes("KAZANIM") || typeValue.includes("ÖDEME") || desc.includes("KAZANIM") || desc.includes("GİRİŞ") || desc.includes("GIRIS");
   if (isFmi && isEarned) {
     console.log("FMI Girişi (Earned) yoklamaya aktarılmayacak: " + pid + " " + dateVal);
     return;
