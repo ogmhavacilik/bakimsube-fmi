@@ -321,9 +321,10 @@
             const pTitle = String(p.title || p.TITLE || p.duty || p.DUTY || '').toLocaleUpperCase('tr-TR');
             const pUnit = String(p.unit || p.UNIT || '').toLocaleUpperCase('tr-TR');
             const pName = String(p.fullName || p.PERSONNAME || p.personName || '').toLocaleUpperCase('tr-TR');
-            const isDriverKeywords = ['ŞÖFÖR', 'ŞOFÖR', 'SOFOR', 'DESTEK MEMUR', 'DESTEK MEMURU', 'SÜRÜCÜ', 'SURUCU'].some(k => pTitle.includes(k) || pUnit.includes(k));
-            const isYerDestekUnit = pUnit.includes('DESTEK') || pUnit.includes('YER') || pTitle.includes('DESTEK');
-            return isDriverKeywords || (isYerDestekUnit && (pTitle.includes('MEMUR') || pTitle.includes('İŞÇİ') || pTitle.includes('ISCI')));
+            const isSerkan = pName.includes('SERKAN KOTAN') || pName.includes('SERKAN KÖTEN');
+            const isDriverKeywords = ['ŞÖFÖR', 'ŞOFÖR', 'SOFOR', 'DESTEK MEMUR', 'DESTEK MEMURU', 'SÜRÜCÜ', 'SURUCU', 'İŞÇİ', 'ISCI'].some(k => pTitle.includes(k) || pUnit.includes(k));
+            const isYerDestekUnit = pUnit.includes('DESTEK') || pUnit.includes('YER') || pTitle.includes('DESTEK') || isSerkan;
+            return isDriverKeywords || isYerDestekUnit;
         };
 
         const checkIsStandbyInAttendance = (targetPid, targetDateStr, attRecords = []) => {
@@ -1880,8 +1881,14 @@
 
                     if (!isAuto) {
                         const rawH = parseFloat(newTx.hours || 0);
-                        newTx.hours = rawH;
-                        newTx.displayHours = rawH;
+                        if (isDriverPerson && isAnyDuty && isStandbyInYoklama) {
+                            const adjH = Math.max(0, rawH - 1.0);
+                            newTx.hours = adjH;
+                            newTx.displayHours = adjH;
+                        } else {
+                            newTx.hours = rawH;
+                            newTx.displayHours = rawH;
+                        }
                     } else if (isTechnical && isWk && isStandbyInYoklama && isAnyDuty) {
                         newTx.displayHours = 10.0;
                         newTx.hours = 10.0;
@@ -1895,7 +1902,7 @@
                         }
                     } else if (isStandby) {
                         if (isDriverPerson) {
-                            const hVal = isWk ? 8.0 : 1.0;
+                            const hVal = isWk ? 10.0 : 1.0;
                             newTx.displayHours = hVal;
                             newTx.hours = hVal;
                         } else {
@@ -2137,7 +2144,7 @@
                         const inSeason = isStandbyDate(dateStr);
                         if ((isStandby || isHolidayStandby) && !inSeason && !isDriverPerson && !isAuto) return;
 
-                        if (isAuto && !isPlannedDuty && !isPlannedDutySeason(dateStr)) return;
+                        if (isAutoDuty && !isPlannedDutySeason(dateStr)) return;
 
                         const isAnyDuty = isDuty || isPlannedDuty;
 
@@ -2196,7 +2203,7 @@
                                             points = 0;
                                             skip = true;
                                         } else if (isDriverPerson) {
-                                            points = isWk ? 8.0 : 1.0;
+                                            points = isWk ? 10.0 : 1.0;
                                         } else if (isTechnical && isWk) {
                                             points = 2.0;
                                         } else {
@@ -2209,10 +2216,14 @@
                                     const isThisPlanned = isPlannedDuty || (isAutoDuty && isInSeason);
 
                                     if (!isAuto) {
-                                        points = hoursPerDay;
+                                        if (isDriverPerson && isStandbyInYoklama) {
+                                            points = Math.max(0, hoursPerDay - 1.0);
+                                        } else {
+                                            points = hoursPerDay;
+                                        }
                                         const dayStats = map[pid].breakdown[dayType] || { day: 0, night: 0 };
-                                        if (String(tx.shift).toUpperCase().includes('GECE')) dayStats.night += hoursPerDay; 
-                                        else dayStats.day += hoursPerDay;
+                                        if (String(tx.shift).toUpperCase().includes('GECE')) dayStats.night += points; 
+                                        else dayStats.day += points;
                                         map[pid].breakdown[dayType] = dayStats;
                                     } else if (isTechnical && isWk && isStandbyInYoklama) {
                                         points = 10.0;
@@ -2646,11 +2657,9 @@
                                 finalHours = 10.0;
                                 showToast(`Personel (OGM1) BEKLEME iken hafta sonu mesaiye geldiği için 10 saat mesai tanımlandı.`, 'warning');
                             } else if (isDriverPerson) {
-                                const maxAllowed = isWk ? 11.0 : 8.0;
-                                if (finalHours > maxAllowed) {
-                                    setIsSaving(false);
-                                    showToast(`DESTEK MEMUR (ŞÖFÖR) beklemede bir günde ${isWk ? 'hafta sonu 11 saati' : 'hafta içi 8 saati'} aşamaz!`, 'warning');
-                                    return;
+                                if (modalType === 'add') {
+                                    finalHours = Math.max(0, finalHours - 1);
+                                    showToast(`Yer Destek (OGM2) personeli bekleme gününde fiili mesai yaptığı için girilen saatten 1 saat düşülerek ${finalHours} saat olarak kaydedildi.`, 'info');
                                 }
                             } else if (modalType === 'add') {
                                 const original = finalHours;
@@ -3031,6 +3040,101 @@
                     const pTitle = String(person.title || '').toLocaleUpperCase('tr-TR');
                     const isSerkan = pName.includes('SERKAN KOTAN') || pName.includes('SERKAN KÖTEN');
                     const isTechnical = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => pTitle.includes(t)) && !isSerkan;
+                    const isDriver = checkIsDriver(person);
+
+                    // Calculate exact totals directly from allItems to guarantee 100% synchronization with the rows
+                    let calculatedEarned = 0;
+                    let calculatedUsed = 0;
+                    let calculatedNormalStandbyDays = 0;
+                    let calculatedNormalStandbyHours = 0;
+                    let calculatedHolidayStandbyDays = 0;
+                    let calculatedHolidayStandbyHours = 0;
+                    let calculatedPlansizPuan = 0;
+                    let calculatedWkdayP = 0;
+                    let calculatedWkendP = 0;
+                    let calculatedHolidP = 0;
+
+                    allItems.forEach(tx => {
+                        const txId = String(tx.id || tx.ID || '').toLowerCase();
+                        const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                        const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
+                        const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
+                        const hasBeklemeInText = txId.includes('standby') || descUpper.includes('BEKLEME');
+                        const isExplicitHolidayStandby = descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby');
+                        const isHolidayStandby = tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby));
+                        const isStandby = tx.isStandby !== undefined ? tx.isStandby : (hasBeklemeInText && !isHolidayStandby);
+                        const isPlannedDuty = !descUpper.includes('PLANSIZ') && (txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV') || descUpper.includes('PLANLI GOREV') || tx.isPlanned === true);
+                        const isFmi = descUpper.includes('FMİ') || descUpper.includes('FMI') || descUpper.includes('F.M.İ') || txId.includes('fmi') || tx.type === TRANSACTION_TYPES.USED;
+                        const isDuty = (txId.includes('duty') || descUpper.includes('GÖREV') || descUpper.includes('GOREV') || tx.type === TRANSACTION_TYPES.EARNED) && !isStandby && !isHolidayStandby && !isPlannedDuty && !isFmi;
+                        const isEarned = tx.type === TRANSACTION_TYPES.EARNED || isStandby || isHolidayStandby || isPlannedDuty;
+                        const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+
+                        let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
+                        const isWk = checkIsWeekend(tx.date);
+                        const isStandbyInYoklama = checkIsStandbyInAttendance(person.id, tx.date, attendanceRecords);
+
+                        if (isDriver && (isHolidayStandby || isStandby)) {
+                            if (isHolidayStandby) {
+                                hours = 10.0;
+                            } else if (isWk) {
+                                hours = 10.0;
+                            } else {
+                                hours = 1.0;
+                            }
+                        } else if (isDriver && (isDuty || isPlannedDuty || !isAuto)) {
+                            const rawH = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours || 0));
+                            hours = isStandbyInYoklama ? Math.max(0, rawH - 1.0) : rawH;
+                        } else if (!isAuto && tx.hours) {
+                            hours = parseFloat(tx.hours);
+                        } else if (isTechnical && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
+                            hours = 10.0;
+                        } else if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
+                            if (isPlannedDuty) {
+                                hours = isWk ? 11.0 : 3.0;
+                            } else if (isHolidayStandby) {
+                                hours = 2.0;
+                            } else if (isStandby) {
+                                hours = (isTechnical && isWk) ? 2.0 : 1.0;
+                            } else if (isFmi) {
+                                hours = 8.0;
+                            }
+                        }
+
+                        if (isHolidayStandby) {
+                            calculatedHolidayStandbyDays++;
+                            calculatedHolidayStandbyHours += hours;
+                            calculatedEarned += hours;
+                        } else if (isStandby) {
+                            calculatedNormalStandbyDays++;
+                            calculatedNormalStandbyHours += hours;
+                            calculatedEarned += hours;
+                        } else if (isFmi || tx.type === TRANSACTION_TYPES.USED) {
+                            calculatedUsed += hours;
+                        } else if (isDuty && !isPlannedDuty) {
+                            const mult = getMultiplier(dayType, isTechnical);
+                            const pts = hours * (isDriver ? 1 : mult);
+                            calculatedPlansizPuan += pts;
+                            calculatedEarned += hours;
+                            if (dayType === DAY_TYPES.WEEKDAY) calculatedWkdayP += pts;
+                            else if (dayType === DAY_TYPES.WEEKEND) calculatedWkendP += pts;
+                            else if (dayType === DAY_TYPES.HOLIDAY) calculatedHolidP += pts;
+                        } else if (isEarned) {
+                            calculatedEarned += hours;
+                        }
+                    });
+
+                    const finalEarned = calculatedEarned > 0 ? calculatedEarned : (totals.modalEarned || 0);
+                    const finalUsed = calculatedUsed > 0 ? calculatedUsed : (totals.modalUsed || 0);
+                    const finalBalance = finalEarned - finalUsed;
+                    const finalNormalStandbyDays = calculatedNormalStandbyDays > 0 ? calculatedNormalStandbyDays : (totals.modalNormalStandbyDays || 0);
+                    const finalNormalStandby = calculatedNormalStandbyHours > 0 ? calculatedNormalStandbyHours : (totals.modalNormalStandby || 0);
+                    const finalHolidayStandbyDays = calculatedHolidayStandbyDays > 0 ? calculatedHolidayStandbyDays : (totals.modalHolidayStandbyDays || 0);
+                    const finalHolidayStandby = calculatedHolidayStandbyHours > 0 ? calculatedHolidayStandbyHours : (totals.modalHolidayStandby || 0);
+                    const finalTotalStandby = finalNormalStandby + finalHolidayStandby;
+                    const finalPlansizPuan = calculatedPlansizPuan > 0 ? calculatedPlansizPuan : (totals.modalPlansizPuan || 0);
+                    const finalWkdayP = calculatedWkdayP > 0 ? calculatedWkdayP : (totals.pWkday || 0);
+                    const finalWkendP = calculatedWkendP > 0 ? calculatedWkendP : (totals.pWkend || 0);
+                    const finalHolidP = calculatedHolidP > 0 ? calculatedHolidP : (totals.pHolid || 0);
 
                     // 1. App Title Row
                     worksheet.mergeCells('A1:G1');
@@ -3066,27 +3170,27 @@
                     // Summary Rows (Grid style)
                     worksheet.getRow(5).height = 22;
                     worksheet.getCell('A5').value = 'TOPLAM KAZANIM';
-                    worksheet.getCell('B5').value = `${totals.modalEarned} SAAT (${(totals.modalEarned / 8).toFixed(1)} Gün)`;
-                    worksheet.getCell('C5').value = 'NORMAL BEKLEME (1P)';
-                    worksheet.getCell('D5').value = `${totals.modalNormalStandbyDays !== undefined ? totals.modalNormalStandbyDays : totals.modalNormalStandby} Gün (${totals.modalNormalStandby} Puan)`;
+                    worksheet.getCell('B5').value = `${finalEarned} SAAT (${(finalEarned / 8).toFixed(1)} Gün)`;
+                    worksheet.getCell('C5').value = isDriver ? 'NORMAL BEKLEME (1S/10S)' : 'NORMAL BEKLEME (1P)';
+                    worksheet.getCell('D5').value = `${finalNormalStandbyDays} Gün (${finalNormalStandby} ${isDriver ? 'Saat' : 'Puan'})`;
 
                     worksheet.getRow(6).height = 22;
                     worksheet.getCell('A6').value = 'KULLANILAN İZİN';
-                    worksheet.getCell('B6').value = `${totals.modalUsed} SAAT (${Math.floor(totals.modalUsed / 8)}G ${(totals.modalUsed % 8).toFixed(1)}S)`;
-                    worksheet.getCell('C6').value = 'RESMİ TATİL BEKLEME (2P)';
-                    worksheet.getCell('D6').value = `${totals.modalHolidayStandbyDays !== undefined ? totals.modalHolidayStandbyDays : Math.round(totals.modalHolidayStandby / 2)} Gün (${totals.modalHolidayStandby} Puan)`;
+                    worksheet.getCell('B6').value = `${finalUsed} SAAT (${Math.floor(finalUsed / 8)}G ${(finalUsed % 8).toFixed(1)}S)`;
+                    worksheet.getCell('C6').value = isDriver ? 'RESMİ TATİL BEKLEME (10S)' : 'RESMİ TATİL BEKLEME (2P)';
+                    worksheet.getCell('D6').value = `${finalHolidayStandbyDays} Gün (${finalHolidayStandby} ${isDriver ? 'Saat' : 'Puan'})`;
 
                     worksheet.getRow(7).height = 22;
                     worksheet.getCell('A7').value = 'KALAN BAKİYE';
-                    worksheet.getCell('B7').value = `${(totals.modalBalance / 8).toFixed(1)} GÜN (${totals.modalBalance.toFixed(1)} SAAT)`;
-                    worksheet.getCell('C7').value = 'TOPLAM BEKLEME PUANI';
-                    worksheet.getCell('D7').value = `${totals.modalNormalStandby + totals.modalHolidayStandby} Puan`;
+                    worksheet.getCell('B7').value = `${(finalBalance / 8).toFixed(1)} GÜN (${finalBalance.toFixed(1)} SAAT)`;
+                    worksheet.getCell('C7').value = isDriver ? 'TOPLAM BEKLEME SAATİ' : 'TOPLAM BEKLEME PUANI';
+                    worksheet.getCell('D7').value = `${finalTotalStandby} ${isDriver ? 'Saat' : 'Puan'}`;
 
                     worksheet.getRow(8).height = 22;
-                    worksheet.getCell('A8').value = 'PLANSIZ MESAİ (PUANLI)';
-                    worksheet.getCell('B8').value = `${(totals.modalPlansizPuan || 0).toFixed(1)} PUAN`;
+                    worksheet.getCell('A8').value = isDriver ? 'PLANSIZ MESAİ (SAAT)' : 'PLANSIZ MESAİ (PUANLI)';
+                    worksheet.getCell('B8').value = `${finalPlansizPuan.toFixed(1)} ${isDriver ? 'SAAT' : 'PUAN'}`;
                     worksheet.getCell('C8').value = 'PLANSIZ MESAİ DETAYI';
-                    worksheet.getCell('D8').value = `H.İçi: ${(totals.pWkday || 0).toFixed(1)} P, H.Sonu: ${(totals.pWkend || 0).toFixed(1)} P, Tatil: ${(totals.pHolid || 0).toFixed(1)} P`;
+                    worksheet.getCell('D8').value = `H.İçi: ${finalWkdayP.toFixed(1)} ${isDriver ? 'S' : 'P'}, H.Sonu: ${finalWkendP.toFixed(1)} ${isDriver ? 'S' : 'P'}, Tatil: ${finalHolidP.toFixed(1)} ${isDriver ? 'S' : 'P'}`;
 
                     // Format Summary table
                     const sumLabelStyle = {
@@ -3217,7 +3321,7 @@
                     worksheet.getRow(10).height = 24;
 
                     // Row 11: Column headers
-                    const colHeaders = ['TARİH', 'İŞLEM APARATI / DETAYI', 'AÇIKLAMA / NOT', 'TİP', 'DURUM', 'MESAİ SAATİ', 'BEKLEME PUANI'];
+                    const colHeaders = ['TARİH', 'İŞLEM APARATI / DETAYI', 'AÇIKLAMA / NOT', 'TİP', 'DURUM', 'MESAİ SAATİ', isDriver ? 'BEKLEME SAATİ' : 'BEKLEME PUANI'];
                     const headerRow = worksheet.getRow(11);
                     headerRow.height = 28;
                     colHeaders.forEach((h, colNum) => {
@@ -3277,10 +3381,13 @@
                              if (isHolidayStandby) {
                                  hours = 10.0;
                              } else if (isWk) {
-                                 hours = 8.0;
+                                 hours = 10.0;
                              } else {
                                  hours = 1.0;
                              }
+                         } else if (isDriverPerson && (isDuty || isPlannedDuty || !isAuto)) {
+                             const rawH = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours || 0));
+                             hours = isStandbyInYoklama ? Math.max(0, rawH - 1.0) : rawH;
                          } else if (!isAuto && tx.hours) {
                              hours = parseFloat(tx.hours);
                          } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
@@ -3304,7 +3411,7 @@
                         if (isHolidayStandby) {
                             if (!descText.includes('RESMİ TATİL')) descText += isDriverPerson ? ' (RESMİ TATİL BEKLEME +10S)' : ' (RESMİ TATİL +2P)';
                         } else if (isStandby) {
-                            if (!descText.includes('BEKLEME')) descText += isDriverPerson ? (isWk ? ' (HAFTA SONU BEKLEME +8S)' : ' (HAFTA İÇİ BEKLEME +1S)') : ((isTechPerson && isWk) ? ' (HAFTA SONU BEKLEME +2P)' : ' (BEKLEME +1P)');
+                            if (!descText.includes('BEKLEME')) descText += isDriverPerson ? (isWk ? ' (HAFTA SONU BEKLEME +10S)' : ' (HAFTA İÇİ BEKLEME +1S)') : ((isTechPerson && isWk) ? ' (HAFTA SONU BEKLEME +2P)' : ' (BEKLEME +1P)');
                         } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
                             descText += ' (BEKLEME MESAİSİ +10S)';
                         }
@@ -4591,15 +4698,15 @@
                                                     </div>
                                                     <div className="bg-amber-500/10 p-3.5 rounded-xl border border-amber-500/20 flex flex-col justify-between">
                                                         <span className="text-xs font-bold text-amber-200">Hafta Sonu Bekleme</span>
-                                                        <span className="text-sm font-black text-amber-300 mt-1">Günlük +8.0 Saat</span>
-                                                     </div>
+                                                        <span className="text-sm font-black text-amber-300 mt-1">Günlük +10.0 Saat</span>
+                                                    </div>
                                                     <div className="bg-fuchsia-500/10 p-3.5 rounded-xl border border-fuchsia-500/20 flex flex-col justify-between">
                                                         <span className="text-xs font-bold text-fuchsia-200">Resmi Tatil Bekleme</span>
-                                                        <span className="text-sm font-black text-fuchsia-300 mt-1">Günlük +10.0 Saat</span>
+                                                        <span className="text-sm font-black text-fuchsia-300 mt-1">Hafta İçi / Sonu +10.0 Saat</span>
                                                     </div>
                                                     <div className="bg-emerald-500/10 p-3.5 rounded-xl border border-emerald-500/20 flex flex-col justify-between">
                                                         <span className="text-xs font-bold text-emerald-200">Fiili Mesai / Görev</span>
-                                                        <span className="text-sm font-black text-emerald-300 mt-1">Birebir (1 Saat = 1S FMİ)</span>
+                                                        <span className="text-sm font-black text-emerald-300 mt-1">Birebir (Bekleme Gününde -1 Saat)</span>
                                                     </div>
                                                 </div>
                                             </div>
@@ -4806,7 +4913,7 @@
                                         const dateStr = normalizeDateSimple(r.date);
                                         return pid === targetPid && 
                                                dateStr.startsWith('2026') &&
-                                               ((status.includes('FMİ') || status.includes('FMI')) || ((status.includes('İZİN') || status.includes('IZIN')) && String(r.leaveType || '').toLocaleUpperCase('tr-TR').includes('FMİ'))) && isStandbyDate(dateStr);
+                                               ((status.includes('FMİ') || status.includes('FMI')) || ((status.includes('İZİN') || status.includes('IZIN')) && String(r.leaveType || '').toLocaleUpperCase('tr-TR').includes('FMİ')));
                                     }).map(r => ({
                                         id: `fmi-auto-${r.date}`,
                                         date: normalizeDateSimple(r.date),
@@ -4916,8 +5023,8 @@
                                                 standbyHours = 10;
                                                 descText = "RESMİ TATİL BEKLEME (10S)";
                                             } else if (isWk) {
-                                                standbyHours = 8;
-                                                descText = "BEKLEME (HAFTA SONU 8S)";
+                                                standbyHours = 10;
+                                                descText = "BEKLEME (HAFTA SONU 10S)";
                                             } else {
                                                 standbyHours = 1;
                                                 descText = "BEKLEME (HAFTA İÇİ 1S)";
@@ -5031,17 +5138,19 @@
                                         const descUpper = String(tx.description || tx.DESCRIPTION || "").toLocaleUpperCase("tr-TR");
                                         const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
-                                        const hasBeklemeInText = txId.includes("standby") || descUpper.includes("BEKLEME");
-                                        const isExplicitHolidayStandby = descUpper.includes("RESMİ BEKLEME") || descUpper.includes("RESMI BEKLEME") || descUpper.includes("TATİL-BEKLEME") || descUpper.includes("TATIL-BEKLEME") || descUpper.includes("RESMİ TATİL BEKLEME") || descUpper.includes("RESMI TATIL BEKLEME") || descUpper.includes("RESMİ TATİL") || descUpper.includes("RESMI TATIL") || txId.includes("hstandby") || txId.includes("holidaystandby");
-                                        const isHolidayStandby = hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby);
-                                        const isStandby = hasBeklemeInText && !isHolidayStandby;
-                                        const isPlannedDuty = !descUpper.includes("PLANSIZ") && (txId.includes("auto_duty") || descUpper.includes("OTOMATİK GÖREV") || descUpper.includes("PLANLI GÖREV") || descUpper.includes("PLANLI GOREV") || tx.isPlanned === true);
                                         const isFmi = descUpper.includes("FMİ") || descUpper.includes("FMI") || descUpper.includes("F.M.İ") || txId.includes("fmi") || tx.type === TRANSACTION_TYPES.USED;
-                                        const isDuty = (txId.includes("duty") || descUpper.includes("GÖREV") || descUpper.includes("GOREV") || tx.type === TRANSACTION_TYPES.EARNED) && !isStandby && !isHolidayStandby && !isPlannedDuty && !isFmi;
+                                        const isPlannedDuty = !isFmi && !descUpper.includes("PLANSIZ") && (txId.includes("auto_duty") || descUpper.includes("OTOMATİK GÖREV") || descUpper.includes("PLANLI GÖREV") || descUpper.includes("PLANLI GOREV") || tx.isPlanned === true);
+
+                                        const isDutyAction = txId.includes("duty") || txId.includes("gorev") || txId.includes("excel") || descUpper.includes("BAKIM") || descUpper.includes("UÇUŞ") || descUpper.includes("UCUS") || descUpper.includes("PLANSIZ");
+                                        const hasPureBekleme = !isDutyAction && (tx.isStandbySync || tx.isHolidayStandby || tx.isStandby || txId.includes("standby") || descUpper.includes("BEKLEME-") || descUpper.startsWith("BEKLEME") || descUpper.startsWith("RESMİ BEKLEME") || descUpper.startsWith("RESMI BEKLEME") || descUpper.startsWith("RESMİ TATİL BEKLEME") || descUpper.startsWith("RESMI TATIL BEKLEME"));
+                                        
+                                        const isHolidayStandby = !isFmi && !isPlannedDuty && hasPureBekleme && (isHolidayDate || isExplicitHolidayStandby);
+                                        const isStandby = !isFmi && !isPlannedDuty && hasPureBekleme && !isHolidayStandby;
+                                        const isDuty = !isFmi && !isPlannedDuty && !isStandby && !isHolidayStandby;
 
                                         if (detailFilterType === "PLANSIZ") return isDuty;
                                         if (detailFilterType === "PLANLI") return isPlannedDuty;
-                                        if (detailFilterType === "BEKLEME") return isStandby || isHolidayStandby;
+                                        if (detailFilterType === "BEKLEME") return (isStandby || isHolidayStandby) && !isDuty && !isPlannedDuty;
                                         if (detailFilterType === "IZIN") return isFmi;
                                         return true;
                                     });
@@ -5244,10 +5353,13 @@
                                                  if (isHolidayStandby) {
                                                      hours = 10.0;
                                                  } else if (isWk) {
-                                                     hours = 8.0;
+                                                     hours = 10.0;
                                                  } else {
                                                      hours = 1.0;
                                                  }
+                                             } else if (isDriverPerson && (isDuty || isPlannedDuty || !isAuto)) {
+                                                 const rawH = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours || 0));
+                                                 hours = isStandbyInYoklama ? Math.max(0, rawH - 1.0) : rawH;
                                              } else if (!isAuto && tx.hours) {
                                                  hours = parseFloat(tx.hours);
                                              } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
@@ -5282,7 +5394,10 @@
                                                                      {tx.description || tx.DESCRIPTION || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
                                                                  </p>
                                                                  {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">{isDriverPerson ? 'RESMİ TATİL BEKLEME (+10S)' : 'RESMİ TATİL (+2P)'}</span>}
-                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">{isDriverPerson ? (isWk ? 'HAFTA SONU BEKLEME (+8S)' : 'HAFTA İÇİ BEKLEME (+1S)') : (isTechPerson && isWk ? 'HAFTA SONU BEKLEME (+2P)' : 'BEKLEME (+1P)')}</span>}
+                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">{isDriverPerson ? (isWk ? 'HAFTA SONU BEKLEME (+10S)' : 'HAFTA İÇİ BEKLEME (+1S)') : (isTechPerson && isWk ? 'HAFTA SONU BEKLEME (+2P)' : 'BEKLEME (+1P)')}</span>}
+                                                                 {isDriverPerson && isStandbyInYoklama && (isDuty || isPlannedDuty) && (
+                                                                     <span className="bg-amber-500/20 text-amber-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-amber-500/30">BEKLEME GÜNÜ (-1S)</span>
+                                                                 )}
                                                                  {isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty) && (
                                                                      <span className="bg-emerald-500/20 text-emerald-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-emerald-500/30">BEKLEME MESAİSİ (+10)</span>
                                                                  )}
