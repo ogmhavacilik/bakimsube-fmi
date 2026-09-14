@@ -1645,38 +1645,20 @@
                 }
             };
 
-            // Load Initial Data (Fast, offline-first, no unauthorized background network calls)
+            // Load Initial Data (Force fresh fetch and clear old cache)
             useEffect(() => {
                 const init = () => {
-                    let savedTransactions = [];
-                    let savedAttendance = [];
-                    let savedPersonnel = [];
-                    try {
-                        savedTransactions = JSON.parse(localStorage.getItem('ogm_overtime_tx') || '[]');
-                    } catch(e) { console.error("Failed to load savedTransactions:", e); }
-                    try {
-                        savedAttendance = JSON.parse(localStorage.getItem('ogm_attendance') || '[]');
-                    } catch(e) { console.error("Failed to load savedAttendance:", e); }
-                    try {
-                        savedPersonnel = JSON.parse(localStorage.getItem('ogm_personnel') || '[]');
-                    } catch(e) { console.error("Failed to load savedPersonnel:", e); }
-                    
-                    if (savedTransactions.length > 0) {
-                        const sanitized = savedTransactions.map(tx => tx.status ? tx : { ...tx, status: 'APPROVED' });
-                        setTransactions(sanitized);
-                    }
-                    if (savedAttendance.length > 0) setAttendanceRecords(savedAttendance);
-                    if (savedPersonnel.length > 0) setPersonnel(savedPersonnel);
+                    // Temizle - SİSTEM HER SAYFA YENİLENDİĞİNDE ÖN BELLEĞİ TAMAMEN SİLMELİ
+                    localStorage.removeItem('ogm_overtime_tx');
+                    localStorage.removeItem('ogm_attendance');
+                    localStorage.removeItem('ogm_personnel');
                     
                     // Always reset admin role on refresh so re-login is required
                     localStorage.removeItem('ogm_admin_role');
                     setAdminRole(null);
                     
-                    setLoading(false);
-                    setIsRefreshing(false);
-
-                    // Fetch fresh records from server in background
-                    refreshData(true);
+                    // Tamamen baştan çek ve ekranı bloke et
+                    refreshData(false);
                 };
                 init();
             }, []);
@@ -6023,11 +6005,25 @@
                                         {successModalInfo.person?.fullName || 'Personel'}
                                     </h3>
                                     <p className="text-sm font-bold text-emerald-400 leading-relaxed">
-                                        FMİ kayıt işlemi tamamlandı. Yönetici onayında beklememektedir.
+                                        {successModalInfo.modalType === 'add' ? 'Mesai kayıt işlemi tamamlandı.' : 'FMİ kayıt işlemi tamamlandı.'} Yönetici onayında beklememektedir.
                                     </p>
                                 </div>
 
                                 <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const targetPerson = successModalInfo.person;
+                                            setSuccessModalInfo(null);
+                                            setSelectedPerson(targetPerson);
+                                            setModalType('history');
+                                        }}
+                                        className="w-full sm:flex-1 bg-amber-500 hover:bg-amber-400 text-white font-black py-3.5 rounded-xl shadow-lg shadow-amber-500/20 hover:scale-[1.02] active:scale-95 transition-all text-xs sm:text-sm uppercase tracking-wider border border-amber-400/30 flex items-center justify-center gap-2"
+                                    >
+                                        <Icon name="History" size={18} />
+                                        GEÇMİŞ KAYITLARI GÖR
+                                    </button>
+
                                     <button
                                         type="button"
                                         onClick={() => {
@@ -6052,7 +6048,7 @@
                                         className="w-full sm:flex-1 bg-forest-500 hover:bg-forest-400 text-white font-black py-3.5 rounded-xl shadow-lg shadow-forest-500/20 hover:scale-[1.02] active:scale-95 transition-all text-xs sm:text-sm uppercase tracking-wider border border-forest-400/30 flex items-center justify-center gap-2"
                                     >
                                         <Icon name="PlusCircle" size={18} />
-                                        DİĞER MESAİ GİRİŞİ
+                                        DİĞER GİRİŞ
                                     </button>
 
                                     <button
