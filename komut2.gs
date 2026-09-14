@@ -232,24 +232,35 @@ function handleGetInitData() {
     const mainDb = getMainDb();
     extractData(getSheetSafely(mainDb, ["İşlemler", "Islemler", "Mesailer", "Transactions"]), 'transactions');
     
-    // Also load "plansız işlemler"
+    // Also load "plansız işlemler" / "plansız mesailer"
     try {
-      let plansizSheet = null;
-      const possibleNames = ["plansız işlemler", "plansız ıslemler", "plansiz_islemler", "plansiz islemler", "Plansız İşlemler", "Plansız Islemler"];
-      for (let name of possibleNames) {
-        plansizSheet = mainDb.getSheetByName(name);
-        if (plansizSheet) break;
-      }
-      if (!plansizSheet) {
-        plansizSheet = mainDb.insertSheet("plansız ıslemler");
+      const allSheets = mainDb.getSheets();
+      const matchedSheets = [];
+      allSheets.forEach(sh => {
+        const sName = sh.getName().trim().toLowerCase();
+        if (sName.includes("plansız") || sName.includes("plansiz")) {
+          matchedSheets.push(sh);
+        }
+      });
+      if (matchedSheets.length === 0) {
+        let created = mainDb.insertSheet("plansız mesailer");
         const displayHeaders = ["ID", "PersonId", "PersonName", "Date", "EndDate", "Days", "Hours", "Type", "Shift", "DayType", "Description", "Status", "Timestamp"];
-        plansizSheet.appendRow(displayHeaders);
+        created.appendRow(displayHeaders);
+        matchedSheets.push(created);
       }
-      if (plansizSheet) {
+      
+      const existingIds = {};
+      result.transactions.forEach((t, idx) => {
+        if (t.ID) {
+          existingIds[String(t.ID).trim()] = idx;
+        }
+      });
+
+      matchedSheets.forEach(plansizSheet => {
         const rawData = plansizSheet.getDataRange().getValues();
-        if (rawData.length > 0) {
+        if (rawData.length > 1) {
           const headers = rawData[0].map(h => String(h).trim().toUpperCase());
-          const plansizList = rawData.slice(1).map(row => {
+          const plansizList = rawData.slice(1).map((row, rIdx) => {
             let obj = {};
             headers.forEach((h, i) => {
               let val = row[i];
@@ -263,28 +274,20 @@ function handleGetInitData() {
               }
               obj[h] = val;
             });
+            // Ensure unique ID if ID is empty or duplicated
+            if (!obj.ID || String(obj.ID).trim() === '') {
+              obj.ID = "plansiz-row-" + (rIdx + 2);
+            }
             return obj;
           });
           
-          const existingIds = {};
-          result.transactions.forEach((t, idx) => {
-            if (t.ID) {
-              existingIds[String(t.ID).trim()] = idx;
-            }
-          });
-          
-          plansizList.forEach(pTx => {
-            const pId = String(pTx.ID || "").trim();
-            if (pId) {
-              if (pId in existingIds) {
-                result.transactions[existingIds[pId]] = pTx;
-              } else {
-                result.transactions.push(pTx);
-              }
-            }
+          plansizList.forEach((pTx, pIdx) => {
+            pTx.IS_PLANSIZ = true;
+            pTx.isPlansiz = true;
+            result.transactions.push(pTx);
           });
         }
-      }
+      });
     } catch(errPlansiz) {
       console.error("Plansız işlemler load error: " + errPlansiz.message);
     }
@@ -391,13 +394,23 @@ function handleApproveOvertime(payload) {
       logAction("ONAY", `Onaylandı: ${txObj.PERSONNAME || payload.id}`, payload.user);
     }
 
-    // Now, also search and approve in "plansız işlemler"
+    // Now, also search and approve in "plansız işlemler" / "plansız mesailer"
     try {
-      const possibleNames = ["plansız işlemler", "plansız ıslemler", "plansiz_islemler", "plansiz islemler", "Plansız İşlemler", "Plansız Islemler"];
+      const possibleNames = ["plansız işlemler", "plansız ıslemler", "plansiz_islemler", "plansiz islemler", "Plansız İşlemler", "Plansız Islemler", "plansız mesailer", "plansiz mesailer", "Plansız Mesailer", "Plansiz Mesailer", "plansız mesai", "Plansız Mesai"];
       let plansizSheet = null;
       for (let name of possibleNames) {
         plansizSheet = mainDb.getSheetByName(name);
         if (plansizSheet) break;
+      }
+      if (!plansizSheet) {
+        const allSheets = mainDb.getSheets();
+        for (let sh of allSheets) {
+          const sName = sh.getName().trim().toLowerCase();
+          if (sName.includes("plansız") || sName.includes("plansiz")) {
+            plansizSheet = sh;
+            break;
+          }
+        }
       }
       
       if (plansizSheet) {
@@ -812,11 +825,21 @@ function syncAutoTransactions(hasLock) {
 function saveOrUpdateManualToPlansizSheet(tx, actionType) {
   try {
     const mainDb = getMainDb();
-    const possibleNames = ["plansız işlemler", "plansız ıslemler", "plansiz_islemler", "plansiz islemler", "Plansız İşlemler", "Plansız Islemler"];
+    const possibleNames = ["plansız işlemler", "plansız ıslemler", "plansiz_islemler", "plansiz islemler", "Plansız İşlemler", "Plansız Islemler", "plansız mesailer", "plansiz mesailer", "Plansız Mesailer", "Plansiz Mesailer", "plansız mesai", "Plansız Mesai"];
     let plansizSheet = null;
     for (let name of possibleNames) {
       plansizSheet = mainDb.getSheetByName(name);
       if (plansizSheet) break;
+    }
+    if (!plansizSheet) {
+      const allSheets = mainDb.getSheets();
+      for (let sh of allSheets) {
+        const sName = sh.getName().trim().toLowerCase();
+        if (sName.includes("plansız") || sName.includes("plansiz")) {
+          plansizSheet = sh;
+          break;
+        }
+      }
     }
     
     // If not found, create "plansız ıslemler"
