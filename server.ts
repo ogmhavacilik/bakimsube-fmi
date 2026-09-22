@@ -10,22 +10,36 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  // CORS support so external static deployments (like Netlify) can use this proxy safely
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
   });
 
-  // In-memory cache for fast instant response
-  let cachedData: any = null;
-  let cacheTimestamp = 0;
+  // Per-URL in-memory cache for fast instant response and fallback
+  const urlCache = new Map<string, { data: any; timestamp: number }>();
 
   // Secure backend proxy to bypass CORS/iframe restrictions for Google Apps Script
-  app.post("/api/proxy", async (req, res) => {
-    const { targetUrl, action, ...payload } = req.body;
+  app.all("/api/proxy", async (req, res) => {
+    // Support both GET query and POST body
+    const body = req.method === "GET" ? req.query : req.body;
+    const { targetUrl, action, ...payload } = body as any;
     
     if (!targetUrl) {
       return res.status(400).json({ success: false, error: "Hedef URL (targetUrl) belirtilmedi." });
     }
+
+    const cacheKey = `${targetUrl}_${action || 'get_init_data'}`;
 
     try {
       const requestBody = JSON.stringify({ action, ...payload });
@@ -61,8 +75,7 @@ async function startServer() {
 
       if (responseJson && typeof responseJson === "object") {
         if (action === "get_init_data" && responseJson.success && responseJson.data) {
-          cachedData = responseJson;
-          cacheTimestamp = Date.now();
+          urlCache.set(cacheKey, { data: responseJson, timestamp: Date.now() });
         }
         return res.json(responseJson);
       } else {
@@ -87,10 +100,11 @@ async function startServer() {
         console.error("Proxy Hatası:", error?.message || error);
       }
 
-      // If we have cached data for get_init_data, serve it during transient network timeout
-      if (action === "get_init_data" && cachedData) {
-        console.log("Serving cached data after proxy timeout");
-        return res.json(cachedData);
+      // If we have cached data for this targetUrl and action, serve it during transient network timeout
+      const cached = urlCache.get(cacheKey);
+      if (action === "get_init_data" && cached && cached.data) {
+        console.log(`Serving cached data for ${cacheKey} after proxy timeout`);
+        return res.json(cached.data);
       }
 
       return res.status(504).json({

@@ -404,22 +404,56 @@
             });
         };
 
+        const CLOUD_RUN_PROXY_URL = "https://ais-pre-inlnbhcb35ep74acdiakoj-216611645803.europe-west2.run.app/api/proxy";
+
         // --- HELPER FUNCTIONS ---
         const apiCall = async (action, payload = {}, targetUrl = OVERTIME_SCRIPT_URL) => {
             let lastError = null;
+            const reqBodyObj = {
+                action,
+                ...payload,
+                user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
+            };
+
+            // 1. Try local server proxy (/api/proxy)
             try {
-                const reqBodyObj = {
-                    action,
-                    ...payload,
-                    user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
-                };
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 25000);
 
-                // 1. Try server proxy with 35s timeout
-                try {
+                const proxyRes = await fetch('/api/proxy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        targetUrl: targetUrl,
+                        ...reqBodyObj
+                    }),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (proxyRes.ok) {
+                    const json = await proxyRes.json().catch(() => null);
+                    if (json && json.success) {
+                        if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
+                            throw new Error("Geçersiz sunucu yanıtı (HTML)");
+                        }
+                        return json.data;
+                    } else if (json && json.error) {
+                        throw new Error(json.error);
+                    }
+                }
+            } catch (proxyErr) {
+                lastError = proxyErr;
+            }
+
+            // 2. Try live Cloud Run backend proxy (essential when running on static hosts like Netlify)
+            try {
+                const isLocalOrSameHost = window.location.hostname === 'localhost' || window.location.hostname.includes('run.app');
+                if (!isLocalOrSameHost) {
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 35000);
+                    const timeoutId = setTimeout(() => controller.abort(), 25000);
 
-                    const proxyRes = await fetch('/api/proxy', {
+                    const extProxyRes = await fetch(CLOUD_RUN_PROXY_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -430,25 +464,67 @@
                     });
                     clearTimeout(timeoutId);
 
-                    const json = await proxyRes.json().catch(() => null);
-                    if (json && json.success) {
-                        if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
-                            throw new Error("Geçersiz sunucu yanıtı (HTML)");
+                    if (extProxyRes.ok) {
+                        const json = await extProxyRes.json().catch(() => null);
+                        if (json && json.success) {
+                            if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
+                                throw new Error("Geçersiz sunucu yanıtı (HTML)");
+                            }
+                            return json.data;
                         }
-                        return json.data;
-                    } else if (json && json.error) {
-                        throw new Error(json.error);
                     }
-                } catch (proxyErr) {
-                    lastError = proxyErr;
                 }
+            } catch (extProxyErr) {
+                lastError = extProxyErr;
+            }
 
-                // If proxy failed, check if it's already an error message from proxy
-                if (lastError && lastError.message) {
-                    throw lastError;
+            // 3. Try direct POST to Google Apps Script (Content-Type: text/plain bypasses CORS preflight)
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+                const directRes = await fetch(targetUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify(reqBodyObj),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (directRes.ok) {
+                    const text = await directRes.text();
+                    let directJson = null;
+                    try { directJson = JSON.parse(text); } catch(e) {}
+                    if (directJson && directJson.success) {
+                        return directJson.data;
+                    }
                 }
-            } catch (error) {
-                lastError = error;
+            } catch (directErr) {
+                lastError = directErr;
+            }
+
+            // 4. Try direct GET to Google Apps Script
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+                const getUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'action=' + encodeURIComponent(action);
+                const getRes = await fetch(getUrl, {
+                    method: 'GET',
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (getRes.ok) {
+                    const text = await getRes.text();
+                    let getJson = null;
+                    try { getJson = JSON.parse(text); } catch(e) {}
+                    if (getJson && getJson.success) {
+                        return getJson.data;
+                    }
+                }
+            } catch (getErr) {
+                lastError = getErr;
             }
 
             const errName = lastError && lastError.name;

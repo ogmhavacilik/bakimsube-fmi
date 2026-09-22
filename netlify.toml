@@ -1,0 +1,10 @@
+[[redirects]]
+  from = "/api/proxy"
+  to = "https://ais-pre-inlnbhcb35ep74acdiakoj-216611645803.europe-west2.run.app/api/proxy"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
