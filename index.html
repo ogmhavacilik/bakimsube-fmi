@@ -107,7 +107,7 @@
             USED: 'USED'      // Mesai Kullanıldı
         };
 
-        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby8tDeIjPN2Nfhj9nzsFxF20CweRZVv6O8oNxV-A-RHot_FfdU3n9lJU26_H1v-UeLT_w/exec";
+        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIcoXEFiU_BKRq5DuIMvsio5HYNvp_kMoQA0ynqht8BmKHq-FO6V28RnRQ9bwUFNay/exec";
         const PERSONNEL_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzKdvHcUikiloAXbBV7KBaKxe4TYVV2JW94E_R-QZPB_nxQzV0FeMt-9EnPnrSWIKG0Lg/exec";
         const SYSTEM_ID = "0005536572913";
 
@@ -146,6 +146,16 @@
                 const day = String(date.getDate()).padStart(2, '0');
                 return `${y}-${m}-${day}`;
             }
+            if (typeof date === 'number' || (/^\d{5}$/.test(String(date).trim()))) {
+                const num = Number(date);
+                if (num > 30000 && num < 60000) {
+                    const d = new Date((num - 25569) * 86400 * 1000);
+                    const y = d.getFullYear();
+                    const m = String(d.getMonth() + 1).padStart(2, '0');
+                    const day = String(d.getDate()).padStart(2, '0');
+                    return `${y}-${m}-${day}`;
+                }
+            }
             let s = String(date).trim();
             
             // Handle DD.MM.YYYY, DD-MM-YYYY, DD/MM/YYYY formats
@@ -156,10 +166,22 @@
                 const year = matchDmy[3];
                 return `${year}-${month}-${day}`;
             }
+
+            // Handle YYYY.MM.DD, YYYY-MM-DD, YYYY/MM/DD formats
+            const matchYmd = s.split(' ')[0].match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/);
+            if (matchYmd) {
+                const year = matchYmd[1];
+                const month = matchYmd[2].padStart(2, '0');
+                const day = matchYmd[3].padStart(2, '0');
+                return `${year}-${month}-${day}`;
+            }
             
             if (s.includes('.')) {
                 const parts = s.split(' ')[0].split('.');
                 if (parts.length === 3) {
+                    if (parts[0].length === 4) {
+                        return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+                    }
                     return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
                 }
             }
@@ -181,23 +203,44 @@
             return str.replace(/^p[-_]?/i, '').replace(/^0+/, '');
         };
 
+        const cleanPersonnelName = (name) => {
+            if (!name) return '';
+            return String(name)
+                .trim()
+                .toLocaleUpperCase('tr-TR')
+                .replace(/Ğ/g, 'G')
+                .replace(/Ü/g, 'U')
+                .replace(/Ş/g, 'S')
+                .replace(/İ/g, 'I')
+                .replace(/I/g, 'I')
+                .replace(/Ö/g, 'O')
+                .replace(/Ç/g, 'C')
+                .replace(/[^A-Z0-9]/g, '');
+        };
+
+        const matchPersonnelName = (nameA, nameB) => {
+            if (!nameA || !nameB) return false;
+            const a = cleanPersonnelName(nameA);
+            const b = cleanPersonnelName(nameB);
+            if (!a || !b) return false;
+            if (a === b) return true;
+            if (a.length >= 4 && b.length >= 4) {
+                if (a.includes(b) || b.includes(a)) return true;
+            }
+            const wordsA = String(nameA).toLocaleUpperCase('tr-TR').split(/\s+/).map(cleanPersonnelName).filter(w => w.length >= 3);
+            const wordsB = String(nameB).toLocaleUpperCase('tr-TR').split(/\s+/).map(cleanPersonnelName).filter(w => w.length >= 3);
+            if (wordsA.length > 0 && wordsB.length > 0) {
+                const common = wordsA.filter(w => wordsB.includes(w));
+                if (common.length >= Math.min(wordsA.length, wordsB.length) && common.length >= 1) return true;
+            }
+            return false;
+        };
+
         const safeLocalStorageSetItem = (key, value) => {
             try {
-                const strToSave = typeof value === 'string' ? value : JSON.stringify(value);
-                localStorage.setItem(key, strToSave);
+                localStorage.setItem(key, value);
             } catch (e) {
-                // Silently handle quota limit by storing recent records without throwing or logging errors
-                try {
-                    let parsed = typeof value === 'string' ? JSON.parse(value) : value;
-                    if (Array.isArray(parsed)) {
-                        const filteredRecent = parsed.filter(item => {
-                            if (!item || !item.date) return false;
-                            const dStr = String(item.date);
-                            return dStr.startsWith('2026') || dStr.startsWith('2025');
-                        });
-                        localStorage.setItem(key, JSON.stringify(filteredRecent));
-                    }
-                } catch (ignored) {}
+                console.warn("LocalStorage yazma hatası:", e);
             }
         };
 
@@ -276,7 +319,13 @@
                 // Oceania
                 'YENI ZELANDA', 'NEW ZEALAND'
             ];
-            return overseasCountries.some(country => l.includes(country));
+            const tokens = new Set(l.split(/[^A-Z0-9]+/).filter(Boolean));
+            return overseasCountries.some(country => {
+                if (country.includes(' ') || country.includes('-')) {
+                    return l.includes(country);
+                }
+                return tokens.has(country);
+            });
         };
 
         const getDayType = (dateStr) => {
@@ -320,10 +369,9 @@
             if (!p) return false;
             const pTitle = String(p.title || p.TITLE || p.duty || p.DUTY || '').toLocaleUpperCase('tr-TR');
             const pUnit = String(p.unit || p.UNIT || '').toLocaleUpperCase('tr-TR');
-            const pName = String(p.fullName || p.PERSONNAME || p.personName || p.name || '').toLocaleUpperCase('tr-TR');
-            const pid = cleanPersonnelId(p.id || p.PID || p.PERSON_ID || p.PERSONID);
-            const isNamedOrId = pid === '67' || pName.includes('RIDVAN') || pName.includes('ŞATIR') || pName.includes('SATIR');
-            return isNamedOrId || ['ŞÖFÖR', 'ŞOFÖR', 'SOFOR', 'SÜRÜCÜ', 'SURUCU', 'DESTEK'].some(k => pTitle.includes(k) || pUnit.includes(k));
+            const combined = `${pTitle} ${pUnit}`;
+            // DESTEK MEMUR(ŞÖFÖR) dahil, unvanında veya görevinde ŞÖFÖR / ŞOFÖR / SÜRÜCÜ geçenler şofördür (+10S)
+            return ['ŞÖFÖR', 'ŞOFÖR', 'SOFOR', 'SÜRÜCÜ', 'SURUCU'].some(k => combined.includes(k));
         };
 
         const checkIsYerDestek = (p) => {
@@ -332,13 +380,13 @@
             const pUnit = String(p.unit || p.UNIT || '').toLocaleUpperCase('tr-TR');
             const pName = String(p.fullName || p.PERSONNAME || p.personName || '').toLocaleUpperCase('tr-TR');
             const isSerkan = pName.includes('SERKAN KOTAN') || pName.includes('SERKAN KÖTEN');
-            const isKeywords = ['ŞÖFÖR', 'ŞOFÖR', 'SOFOR', 'DESTEK MEMUR', 'DESTEK MEMURU', 'SÜRÜCÜ', 'SURUCU', 'İŞÇİ', 'ISCI', 'MEMUR'].some(k => pTitle.includes(k) || pUnit.includes(k));
+            const isKeywords = ['DESTEK MEMUR', 'DESTEK MEMURU', 'DESTEK', 'İŞÇİ', 'ISCI', 'MEMUR'].some(k => pTitle.includes(k) || pUnit.includes(k));
             const isYerDestekUnit = pUnit.includes('DESTEK') || pUnit.includes('YER') || pTitle.includes('DESTEK') || isSerkan;
             return isKeywords || isYerDestekUnit;
         };
 
         const checkIsDriver = (p) => {
-            return checkIsYerDestek(p);
+            return checkIsDriverOnly(p);
         };
 
         const checkIsStandbyInAttendance = (targetPid, targetDateStr, attRecords = []) => {
@@ -358,104 +406,57 @@
 
         // --- HELPER FUNCTIONS ---
         const apiCall = async (action, payload = {}, targetUrl = OVERTIME_SCRIPT_URL) => {
-            const urlsToTry = [targetUrl];
-            const alternateUrl = targetUrl === OVERTIME_SCRIPT_URL ? PERSONNEL_SCRIPT_URL : OVERTIME_SCRIPT_URL;
-            if (alternateUrl && alternateUrl !== targetUrl) {
-                urlsToTry.push(alternateUrl);
-            }
-
             let lastError = null;
-            for (const url of urlsToTry) {
+            try {
+                const reqBodyObj = {
+                    action,
+                    ...payload,
+                    user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
+                };
+
+                // 1. Try server proxy with 35s timeout
                 try {
-                    const isDirectStatic = window.location.hostname.includes('netlify') || 
-                                         window.location.hostname.includes('github.io') || 
-                                         window.location.hostname.includes('vercel.app') || 
-                                         window.location.hostname.includes('firebaseapp.com');
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 35000);
 
-                    const reqBodyObj = {
-                        action,
-                        ...payload,
-                        user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
-                    };
-                    const reqPayload = JSON.stringify(reqBodyObj);
+                    const proxyRes = await fetch('/api/proxy', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            targetUrl: targetUrl,
+                            ...reqBodyObj
+                        }),
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
 
-                    // 1. Try proxy first unless on static hosting
-                    if (!isDirectStatic) {
-                        try {
-                            const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-                            const proxyRes = await fetch('/api/proxy', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    targetUrl: url,
-                                    ...reqBodyObj
-                                }),
-                                signal: controller.signal
-                            });
-                            clearTimeout(timeoutId);
-
-                            const json = await proxyRes.json().catch(() => null);
-                            if (json && json.success) {
-                                if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
-                                    throw new Error("GEÇERSİZ YANIT (HTML)");
-                                }
-                                return json.data;
-                            } else if (json && json.error) {
-                                throw new Error(json.error);
-                            }
-                        } catch (proxyErr) {
-                            lastError = proxyErr;
-                            const pErrStr = String(proxyErr?.message || proxyErr || '');
-                            if (pErrStr.includes('Kilit') || pErrStr.includes('meşgul') || pErrStr.includes('yanıt vermedi') || pErrStr.includes('Zaman aşımı') || pErrStr.includes('timeout')) {
-                                throw proxyErr;
-                            }
+                    const json = await proxyRes.json().catch(() => null);
+                    if (json && json.success) {
+                        if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
+                            throw new Error("Geçersiz sunucu yanıtı (HTML)");
                         }
+                        return json.data;
+                    } else if (json && json.error) {
+                        throw new Error(json.error);
                     }
-
-                    // 2. Direct POST request fallback to Google Apps Script
-                    try {
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 35000);
-
-                        const directRes = await fetch(url, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'text/plain;charset=utf-8'
-                            },
-                            body: reqPayload,
-                            signal: controller.signal
-                        });
-                        clearTimeout(timeoutId);
-
-                        if (directRes.ok) {
-                            const json = await directRes.json();
-                            if (json && json.success) {
-                                return json.data;
-                            } else if (json && json.error) {
-                                throw new Error(json.error);
-                            }
-                        } else {
-                            throw new Error(`Ağ hatası (${directRes.status})`);
-                        }
-                    } catch (directErr) {
-                        throw directErr;
-                    }
-                } catch (error) {
-                    lastError = error;
-                    const errStr = String(error?.message || error || '');
-                    if (errStr.includes('Kilit') || errStr.includes('meşgul') || errStr.includes('yanıt vermedi') || errStr.includes('Zaman aşımı')) {
-                        break;
-                    }
+                } catch (proxyErr) {
+                    lastError = proxyErr;
                 }
+
+                // If proxy failed, check if it's already an error message from proxy
+                if (lastError && lastError.message) {
+                    throw lastError;
+                }
+            } catch (error) {
+                lastError = error;
             }
+
             const errName = lastError && lastError.name;
             const errStr = String(lastError?.message || lastError || '');
             if (errName === 'AbortError' || errName === 'TimeoutError' || errStr.includes('timeout') || errStr.includes('zaman aşımı') || errStr.includes('aborted')) {
                 throw new Error("Sunucu yanıt süresi aşıldı (Zaman aşımı). Lütfen ağ bağlantınızı kontrol edip tekrar deneyiniz.");
             }
-            throw lastError || new Error("API sunucusu ile bağlantı kurulamadı. Lütfen ağ bağlantınızı ve yetkilerinizi kontrol ediniz.");
+            throw lastError || new Error("API sunucusu ile bağlantı kurulamadı.");
         };
 
         const copyYoklamaFormat = (tx) => {
@@ -603,59 +604,24 @@
             );
         };
 
-        // Canonical verified records for Ridvan Satir (ID 67) to ensure 100% data integrity with manual sheet
-        const CANONICAL_RIDVAN_24_TXS = [
-            { id: 'manual-tx-1788781076115', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-02-02', endDate: '2026-02-02', days: 1, hours: 1.5, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: '5 ABM -HANGAR', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788781115136', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-02-10', endDate: '2026-02-10', days: 1, hours: 1.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'OBM -HANGAR', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788781143873', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-02-16', endDate: '2026-02-16', days: 1, hours: 1.5, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: '5 ABM HANGAR -MAMAK ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788781165265', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-02-17', endDate: '2026-02-17', days: 1, hours: 1.7, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: '5 ABM HANGAR ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788781193483', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-02-18', endDate: '2026-02-18', days: 1, hours: 1.5, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'HANGAR-OGM-HANGAR-SSB', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788781219351', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-02-23', endDate: '2026-02-23', days: 1, hours: 1.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'OGM-HANGAR', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788782191018', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-04-01', endDate: '2026-04-01', days: 1, hours: 1.3, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: '5 ABM HANGAR', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788782219187', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-04-02', endDate: '2026-04-02', days: 1, hours: 1.3, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: '5 ABM HANGAR', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788783099286', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-06-29', endDate: '2026-06-29', days: 1, hours: 1.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'NATO BÖLGE BEKLEME', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788783129675', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-06-30', endDate: '2026-06-30', days: 1, hours: 1.4, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'NATO BÖLGE BEKLEME', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788783711787', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-07-01', endDate: '2026-07-01', days: 1, hours: 1.5, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'NATO BÖLGE BEKLEME', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788783756299', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-07-02', endDate: '2026-07-02', days: 1, hours: 2.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'NATO BÖLGE BEKLEME', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788783774151', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-07-04', endDate: '2026-07-04', days: 1, hours: 1.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKEND, description: 'NATO BÖLGE BEKLEME', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788783807878', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-07-22', endDate: '2026-07-22', days: 1, hours: 2.9, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: '5 ABM HANGAR ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785306953', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-03', endDate: '2026-08-03', days: 1, hours: 2.3, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'HANGAR PERSONEL TAŞIMA ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785376500', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-05', endDate: '2026-08-05', days: 1, hours: 1.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'OGM HANGAR PERSONEL İNTİKAL ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785410781', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-06', endDate: '2026-08-06', days: 1, hours: 4.8, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'BELL 429 PERSONEL İNTİKAL ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785457574', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-07', endDate: '2026-08-07', days: 1, hours: 3.5, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'C-650 İÇİN TURKISH DOCO YEMEK ALIMI ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785490899', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-08', endDate: '2026-08-08', days: 1, hours: 2.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKEND, description: 'HANGAR İKMAL İÇİN İNTİKAL ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785509649', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-09', endDate: '2026-08-09', days: 1, hours: 2.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKEND, description: 'HANGAR İNTİKAL', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785560695', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-10', endDate: '2026-08-10', days: 1, hours: 3.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'HANGAR OGM HANGAR', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785595709', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-12', endDate: '2026-08-12', days: 1, hours: 2.5, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'C-650 İÇİN TURKISH DOCO YEMEK ALIMI ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785623414', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-13', endDate: '2026-08-13', days: 1, hours: 3.0, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: 'OGM HANGAR İNTİKAL OGM HANGAR ', status: 'APPROVED', isPlansiz: true },
-            { id: 'manual-tx-1788785648192', personId: '67', personName: 'RIDVAN ŞATIR', date: '2026-08-14', endDate: '2026-08-14', days: 1, hours: 1.7, type: TRANSACTION_TYPES.EARNED, shift: 'Gündüz', dayType: DAY_TYPES.WEEKDAY, description: '5 ABM HANGAR', status: 'APPROVED', isPlansiz: true }
-        ];
-
         // --- MAIN APP ---
         const App = () => {
             const [personnel, setPersonnel] = useState(() => {
                 try {
-                    const cached = localStorage.getItem('ogm_personnel');
-                    return cached ? JSON.parse(cached) : [];
+                    const saved = localStorage.getItem('ogm_personnel');
+                    return saved ? JSON.parse(saved) : [];
                 } catch(e) { return []; }
             });
             const [transactions, setTransactions] = useState(() => {
                 try {
-                    const cached = localStorage.getItem('ogm_overtime_tx');
-                    let list = cached ? JSON.parse(cached) : [];
-                    if (!Array.isArray(list)) list = [];
-                    const ridvanCount = list.filter(t => cleanPersonnelId(t.personId || t.PERSONID) === '67').length;
-                    if (ridvanCount < 24) {
-                        const nonRidvan = list.filter(t => cleanPersonnelId(t.personId || t.PERSONID) !== '67');
-                        list = [...nonRidvan, ...CANONICAL_RIDVAN_24_TXS];
-                    }
-                    return list;
-                } catch(e) { return CANONICAL_RIDVAN_24_TXS; }
+                    const saved = localStorage.getItem('ogm_transactions') || localStorage.getItem('ogm_overtime_tx');
+                    return saved ? JSON.parse(saved) : [];
+                } catch(e) { return []; }
             });
             const [attendanceRecords, setAttendanceRecords] = useState(() => {
                 try {
-                    const cached = localStorage.getItem('ogm_attendance');
-                    return cached ? JSON.parse(cached) : [];
+                    const saved = localStorage.getItem('ogm_attendance');
+                    return saved ? JSON.parse(saved) : [];
                 } catch(e) { return []; }
             });
             const [loading, setLoading] = useState(false);
@@ -1111,7 +1077,7 @@
                 const name = (p.fullName || '').toLocaleUpperCase('tr-TR');
                 const isSerkan = name.includes('SERKAN KOTAN') || name.includes('SERKAN KÖTEN');
                 
-                const isYerDestek = title.includes('DESTEK') || title.includes('İŞÇİ') || title.includes('ISCI') || unit.includes('DESTEK') || unit.includes('YER_DESTEK') || unit.includes('YER DESTEK') || isSerkan;
+                const isYerDestek = title.includes('DESTEK') || title.includes('İŞÇİ') || title.includes('ISCI') || title.includes('ŞOFÖR') || title.includes('ŞÖFÖR') || title.includes('SOFOR') || title.includes('HİZMETLİ') || title.includes('HIZMETLI') || unit.includes('DESTEK') || unit.includes('YER_DESTEK') || unit.includes('YER DESTEK') || isSerkan;
                 const isTeknikEkipUnvan = [
                     'UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ', 
                     'UCAK TEKNIKERI', 'UCAK TEKNISYENI', 
@@ -1299,9 +1265,28 @@
                 }
 
                 try {
-                    // Single optimized call to Google Apps Script (both URLs are identical, avoid duplicate 4MB fetches)
-                    const resMain = await apiCall('get_init_data', {}, OVERTIME_SCRIPT_URL).catch(() => null);
-                    const resPersonnel = resMain;
+                    // Paralel olarak çekimi yapıyoruz
+                    const fetchMain = apiCall('get_init_data', {}, OVERTIME_SCRIPT_URL).catch((err) => { 
+                        console.warn("Plansız Mesai çekme uyarısı:", err?.message || err); 
+                        return null; 
+                    });
+                    
+                    const fetchPersonnel = OVERTIME_SCRIPT_URL === PERSONNEL_SCRIPT_URL 
+                        ? Promise.resolve(null)
+                        : apiCall('get_init_data', {}, PERSONNEL_SCRIPT_URL).catch((err) => { 
+                            console.warn("Yoklama/Personel çekme uyarısı:", err?.message || err);
+                            return null; 
+                        });
+
+                    const [resMain, resPersonnelRaw] = await Promise.all([fetchMain, fetchPersonnel]);
+                    const resPersonnel = OVERTIME_SCRIPT_URL === PERSONNEL_SCRIPT_URL ? resMain : resPersonnelRaw;
+
+                    if (!resMain && !resPersonnel) {
+                        const hasCachedPersonnel = personnel && personnel.length > 0;
+                        if (!hasCachedPersonnel) {
+                            showToast("Canlı sunucuya bağlanılamadı, yerel/önbellek verileriyle devam ediliyor.", "warning");
+                        }
+                    }
 
                     if (progressInterval) clearInterval(progressInterval);
 
@@ -1326,8 +1311,25 @@
                     processList(resPersonnel?.personnel);
                     const combinedPersonnel = Object.values(personnelMap);
 
-                    const rawTxList = resMain?.transactions || resPersonnel?.transactions || [];
-                    const rawAttList = resMain?.attendance || resMain?.yoklama || resPersonnel?.attendance || resPersonnel?.yoklama || [];
+                    const getCombinedList = (list1, list2) => {
+                        const arr1 = Array.isArray(list1) ? list1 : [];
+                        const arr2 = Array.isArray(list2) ? list2 : [];
+                        if (arr1.length > 0 && arr2.length === 0) return arr1;
+                        if (arr2.length > 0 && arr1.length === 0) return arr2;
+                        if (arr1.length === 0 && arr2.length === 0) return [];
+                        const m = new Map();
+                        [...arr1, ...arr2].forEach((item, idx) => {
+                            const k = item.ID || item.id || `${item.PERSONID || item.PERSON_ID || item.personId}_${item.DATE || item.date}_${item.HOURS || item.hours}_${idx}`;
+                            if (!m.has(k)) m.set(k, item);
+                        });
+                        return Array.from(m.values());
+                    };
+
+                    const rawTxList = getCombinedList(resMain?.transactions, resPersonnel?.transactions);
+                    const rawAttList = getCombinedList(
+                        resMain?.attendance || resMain?.yoklama,
+                        resPersonnel?.attendance || resPersonnel?.yoklama
+                    );
 
                     const data = {
                         personnel: combinedPersonnel,
@@ -1392,7 +1394,7 @@
 
                     let latestTxList = [];
                     if (data.transactions && data.transactions.length > 0) {
-                        const formattedTX = data.transactions.map(tx => {
+                        const formattedTX = data.transactions.map((tx, txIndex) => {
                             const getVal = (obj, keys) => {
                                 const normalizeKey = (k) => String(k || '')
                                     .trim()
@@ -1416,37 +1418,68 @@
                                 return undefined;
                             };
 
-                            const pidClean = cleanPersonnelId(getVal(tx, ['PID', 'PERSON_ID', 'PERSONID']) || '');
-                            let rawTxId = getVal(tx, ['ID']);
-                            const txDateVal = normalizeDate(getVal(tx, ['DATE_L', 'DATE_REF', 'DATE', 'TARİH', 'TARIH']));
-                            if (pidClean === '67' && rawTxId === 'manual-tx-1788785410781') {
-                                if (txDateVal === '2026-08-07' || txDateVal?.startsWith('2026-08-07')) rawTxId = 'manual-tx-1788785457574';
-                                else if (txDateVal === '2026-08-08' || txDateVal?.startsWith('2026-08-08')) rawTxId = 'manual-tx-1788785490899';
-                                else if (txDateVal === '2026-08-12' || txDateVal?.startsWith('2026-08-12')) rawTxId = 'manual-tx-1788785595709';
+                            let pidClean = cleanPersonnelId(getVal(tx, ['PID', 'PERSON_ID', 'PERSONID', 'PERSONEL_ID', 'PERSONELID', 'ID', 'TC NO', 'KİŞİ ID', 'KISI ID']) || '');
+                            const rawTxId = getVal(tx, ['ID', 'TRANSACTION_ID', 'TX_ID', 'ISLEM_ID', 'SIRA_NO', 'NO']) || ('plansiz_' + (txIndex + 1));
+                            const personNameVal = getVal(tx, ['PERSON_NAME', 'PERSONNAME', 'KISI_ADI', 'KİŞİ_ADI', 'NAME', 'AD_SOYAD', 'ADSOYAD', 'AD_SOYADI', 'PERSONEL', 'PERSONEL_ADI', 'PERSONEL_AD_SOYAD']);
+                            const rawDateVal = getVal(tx, ['DATE_L', 'DATE_REF', 'DATE', 'TARİH', 'TARIH', 'TARIHI', 'TARİHİ', 'GUN', 'GÜN', 'ISLEM_TARIHI', 'İŞLEM_TARİHİ']);
+                            let txDateVal = normalizeDate(rawDateVal) || formatDateLocal(rawDateVal);
+                            if (!txDateVal) {
+                                if (rawDateVal) txDateVal = String(rawDateVal).trim();
+                                if (!txDateVal) txDateVal = formatDateLocal(new Date());
                             }
+
+                            // Match person by name or ID
+                            let finalPid = pidClean;
+                            let finalName = personNameVal || '';
+                            if (personNameVal) {
+                                const matchedPerson = (data.personnel || []).find(p => {
+                                    const pName = p.FULL_NAME || p.fullName || p.AD_SOYAD || p.NAME || '';
+                                    return matchPersonnelName(personNameVal, pName);
+                                });
+                                if (matchedPerson) {
+                                    finalPid = cleanPersonnelId(matchedPerson.ID || matchedPerson.id || finalPid);
+                                    finalName = matchedPerson.FULL_NAME || matchedPerson.fullName || finalName;
+                                }
+                            } else if (finalPid) {
+                                const matchedPerson = (data.personnel || []).find(p => cleanPersonnelId(p.ID || p.id) === finalPid);
+                                if (matchedPerson) {
+                                    finalName = matchedPerson.FULL_NAME || matchedPerson.fullName || finalName;
+                                }
+                            }
+
+                            const txTypeCalculated = (() => {
+                                const t = String(getVal(tx, ['TYPE', 'TIP', 'TİP']) || '').toUpperCase();
+                                if (t.includes('EARN') || t.includes('KAZAN') || t.includes('FMİ') || t.includes('FMI') || t.includes('MESAİ') || t.includes('MESAI')) return TRANSACTION_TYPES.EARNED;
+                                if (t.includes('USE') || t.includes('KULLAN') || t.includes('İZİN') || t.includes('IZIN')) return TRANSACTION_TYPES.USED;
+                                return t || TRANSACTION_TYPES.EARNED;
+                            })();
+
+                            let hoursVal = parseFloat(String(getVal(tx, ['HOURS', 'SAATLER', 'SURE', 'SÜRE', 'SAAT', 'MESAİ_SAATİ', 'MESAISAATI', 'MESAI_SAATI', 'PUAN']) || 0).replace(',', '.'));
+                            if (isNaN(hoursVal) || hoursVal <= 0) {
+                                hoursVal = parseFloat(tx.HOURS || tx.hours || tx.displayHours || tx.PUAN || tx.puan || 0);
+                            }
+
+                            const isPlansizExplicit = tx.isPlansiz === true || tx.IS_PLANSIZ === true;
+                            const isPlansiz = isPlansizExplicit || txTypeCalculated === TRANSACTION_TYPES.EARNED || String(rawTxId || '').startsWith('manual-tx') || String(rawTxId || '').startsWith('sheet_tx') || String(rawTxId || '').startsWith('plansiz');
 
                             // Unified mapping for all transaction columns
                             return {
                                 ...tx,
-                                id: rawTxId,
-                                personId: pidClean,
-                                personName: getVal(tx, ['PERSON_NAME', 'PERSONNAME', 'KISI_ADI', 'KİŞİ_ADI', 'NAME']),
+                                id: rawTxId || `plansiz-tx-${finalPid || 'pid'}-${txIndex}-${Math.random().toString(36).substring(2, 7)}`,
+                                personId: finalPid || pidClean,
+                                personName: finalName || personNameVal,
                                 date: txDateVal,
-                                endDate: normalizeDate(getVal(tx, ['END_DATE', 'ENDDATE', 'BITIS_TARIHI'])),
+                                endDate: normalizeDate(getVal(tx, ['END_DATE', 'ENDDATE', 'BITIS_TARIHI'])) || txDateVal,
                                 startTime: getVal(tx, ['START_TIME', 'STARTTIME', 'BASLANGIC_SAATI', 'S_SAATI']),
                                 endTime: getVal(tx, ['END_TIME', 'ENDTIME', 'BITIS_SAATI', 'B_SAATI']),
-                                hours: parseFloat(String(getVal(tx, ['HOURS', 'SAATLER', 'SURE', 'SÜRE']) || 0).replace(',', '.')),
+                                hours: hoursVal,
                                 days: parseInt(String(getVal(tx, ['DAYS', 'GUNLER', 'GUN', 'GÜN']) || 1)),
-                                description: getVal(tx, ['DESCRIPTION', 'ACIKLAMA', 'AÇIKLAMA', 'ACIKLAMALAR', 'AÇIKLAMALAR']),
-                                note: getVal(tx, ['NOTE', 'NOT', 'NOTLAR']),
-                                shift: getVal(tx, ['SHIFT', 'VARDIYA', 'VARDİYA']),
+                                description: getVal(tx, ['DESCRIPTION', 'ACIKLAMA', 'AÇIKLAMA', 'ACIKLAMALAR', 'AÇIKLAMALAR', 'GOREV', 'GÖREV', 'ISLEM', 'İŞLEM']) || 'PLANSIZ MESAİ',
+                                note: getVal(tx, ['NOTE', 'NOT', 'NOTLAR', 'NOTES', 'BILGI', 'BİLGİ']),
+                                shift: getVal(tx, ['SHIFT', 'VARDIYA', 'VARDİYA', 'GECE_GUNDUZ', 'GECE_GÜNDÜZ']),
                                 dayType: getVal(tx, ['DAY_TYPE', 'DAYTYPE', 'GUN_TIPI', 'GÜN_TİPİ']),
-                                type: (() => {
-                                    const t = String(getVal(tx, ['TYPE', 'TIP', 'TİP']) || '').toUpperCase();
-                                    if (t.includes('EARN') || t.includes('KAZAN') || t.includes('FMİ') || t.includes('FMI') || t.includes('MESAİ') || t.includes('MESAI')) return TRANSACTION_TYPES.EARNED;
-                                    if (t.includes('USE') || t.includes('KULLAN') || t.includes('İZİN') || t.includes('IZIN')) return TRANSACTION_TYPES.USED;
-                                    return t;
-                                })(),
+                                type: txTypeCalculated,
+                                isPlansiz: isPlansiz,
                                 status: (() => {
                                     const s = String(getVal(tx, ['STATUS', 'DURUM']) || '').toUpperCase();
                                     if (s === 'APPROVED' || s === 'ONAYLANDI' || s === 'ONAYLI' || s === 'MODIFIED') return 'APPROVED';
@@ -1456,15 +1489,7 @@
                                 })(),
                                 createdAt: getVal(tx, ['CREATED_AT', 'CREATEDAT', 'OLUSTURMA_TARIHI', 'TIMESTAMP'])
                             };
-                        }).filter(tx => tx.personId && tx.date);
-
-                        // Ensure complete 24 canonical records for Ridvan Satir (ID 67)
-                        const ridvanInFormatted = formattedTX.filter(t => cleanPersonnelId(t.personId) === '67');
-                        if (ridvanInFormatted.length < 24) {
-                            const existingIds = new Set(ridvanInFormatted.map(t => t.id));
-                            const missing = CANONICAL_RIDVAN_24_TXS.filter(t => !existingIds.has(t.id));
-                            formattedTX = [...formattedTX, ...missing];
-                        }
+                        }).filter(tx => tx.personId || tx.personName);
 
                         if (formattedTX.length > 0) {
                             latestTxList = formattedTX;
@@ -1512,8 +1537,10 @@
                                 'AKTARILDIR',
                                 'SYSTEM_TRANSFER'
                             ]);
+                            const rawAttId = getVal(a, ['ID', 'LOG_ID', 'ROW_ID', 'ATT_ID', 'KAYIT_ID']);
                             
                             return {
+                                id: rawAttId || `${cleanPersonnelId(pidVal || '')}_${normalizeDate(dateVal)}`,
                                 personId: cleanPersonnelId(pidVal || ''),
                                 date: normalizeDate(dateVal),
                                 status: attStatus,
@@ -1525,25 +1552,29 @@
                             };
                         }).filter(a => a.personId && a.date);
 
+                        const getPriority = (rec) => {
+                            const us = String(rec.status || '').toUpperCase();
+                            const leave = String(rec.leaveType || '').toUpperCase().replace(/\./g, '');
+                            let score = 0;
+                            if (us.includes('GÖREV') || us.includes('GOREV')) score = 40;
+                            else if (us.includes('İZİN') || us.includes('IZIN') || us.includes('İDARİ') || us.includes('FMİ') || us.includes('FMI') || leave.includes('FMİ') || leave.includes('FMI')) score = 30;
+                            else if (us.includes('RAPOR')) score = 25;
+                            else if (us.includes('MEVCUT') || us.includes('NORMAL')) score = 10;
+                            
+                            if (score >= 30 && rec.location && rec.location.length > 1) score += 5;
+                            return score;
+                        };
+
+                        const sortedByPriority = [...formattedAttendance].sort((a, b) => getPriority(b) - getPriority(a));
+
                         const attMap = new Map();
-                        formattedAttendance.forEach(att => {
+                        sortedByPriority.forEach(att => {
                             const key = `${att.personId}_${att.date}`;
                             if (!attMap.has(key)) attMap.set(key, att);
                         });
                         const uniqueAttendance = Array.from(attMap.values());
 
                         const sortedAttendance = uniqueAttendance.sort((a, b) => {
-                            const getPriority = (rec) => {
-                                const us = String(rec.status || '').toUpperCase();
-                                let score = 0;
-                                if (us.includes('GÖREV') || us.includes('GOREV')) score = 40;
-                                else if (us.includes('İZİN') || us.includes('IZIN') || us.includes('İDARİ') || us.includes('FMİ') || us.includes('FMI')) score = 30;
-                                else if (us.includes('RAPOR')) score = 25;
-                                else if (us.includes('MEVCUT') || us.includes('NORMAL')) score = 10;
-                                
-                                if (score >= 30 && rec.location && rec.location.length > 1) score += 5;
-                                return score;
-                            };
                             return getPriority(b) - getPriority(a);
                         });
 
@@ -1645,20 +1676,16 @@
                 }
             };
 
-            // Load Initial Data (Force fresh fetch and clear old cache)
+            // Load Initial Data (Fetch fresh live data)
             useEffect(() => {
                 const init = () => {
-                    // Temizle - SİSTEM HER SAYFA YENİLENDİĞİNDE ÖN BELLEĞİ TAMAMEN SİLMELİ
-                    localStorage.removeItem('ogm_overtime_tx');
-                    localStorage.removeItem('ogm_attendance');
-                    localStorage.removeItem('ogm_personnel');
-                    
                     // Always reset admin role on refresh so re-login is required
                     localStorage.removeItem('ogm_admin_role');
                     setAdminRole(null);
                     
-                    // Tamamen baştan çek ve ekranı bloke et
-                    refreshData(false);
+                    // Verileri canlı olarak çek (önbellek varsa arkada tazele)
+                    const hasCached = (personnel && personnel.length > 0) || (transactions && transactions.length > 0);
+                    refreshData(hasCached);
                 };
                 init();
             }, []);
@@ -1720,11 +1747,11 @@
                     const dayType = getDayType(dateStr);
                     const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                     const isWk = checkIsWeekend(dateStr);
-                    const isStatusIzin = normStatus.trim() === 'İZİN' || normStatus.trim() === 'IZIN';
+                    const isStatusIzin = normStatus.includes('İZİN') || normStatus.includes('IZIN');
                     const cleanLeave = leave.replace(/\./g, '').trim();
                     const isLeaveFmi = cleanLeave === 'FMİ' || cleanLeave === 'FMI' || cleanLeave.includes('FMİ') || cleanLeave.includes('FMI');
                     const isStatusFmi = normStatus.includes('FMİ') || normStatus.includes('FMI');
-                    const isFmi = (isStatusIzin && isLeaveFmi) || isStatusFmi || note.includes('FMİ') || note.includes('FMI');
+                    const isFmi = (isStatusIzin && isLeaveFmi) || isStatusFmi || cleanLeave.includes('FMİ') || cleanLeave.includes('FMI') || note.includes('FMİ') || note.includes('FMI');
                     if (isFmi) {
                         attendanceVirtual.push({
                             id: `auto-fmi-${pid}-${dateStr}`,
@@ -1854,17 +1881,17 @@
                 });
 
                 return sorted.filter(tx => {
-                    const date = String(tx.date || '');
-                    if (!date.startsWith('2026')) return false;
-
-                    const pid = cleanPersonnelId(tx.personId);
-                    const dateLocal = formatDateLocal(tx.date);
                     const id = String(tx.id || tx.ID || '').toLowerCase();
                     const isAuto = id.startsWith('auto-') || id.includes('auto-') || id.includes('sync');
-                    
                     const desc = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
-                    const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || id.startsWith('manual-tx') || desc.includes('PLANSIZ');
+                    const txType = tx.type || tx.TYPE || '';
+                    const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || id.startsWith('manual-tx') || id.startsWith('manual-override') || id.startsWith('plansiz') || id.startsWith('sheet_tx') || desc.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                     if (isPlansiz) return true; // Plansız mesailer her zaman korunur
+
+                    const dateLocal = formatDateLocal(tx.date || tx.DATE);
+                    if (!dateLocal || !dateLocal.startsWith('2026')) return false;
+
+                    const pid = cleanPersonnelId(tx.personId || tx.PERSONID);
 
                     const hasAutoFmi = autoFmiSet.has(`${pid}_${dateLocal}`);
                     const isTxPlannedDuty = id.includes('auto_duty') || 
@@ -1960,29 +1987,19 @@
                         const rawH = parseFloat(newTx.hours !== undefined ? newTx.hours : (newTx.displayHours || 0));
                         newTx.hours = rawH;
                         newTx.displayHours = rawH;
-                    } else if (isTechnical && isWk && isStandbyInYoklama && isAnyDuty) {
-                        newTx.displayHours = 10.0;
-                        newTx.hours = 10.0;
                     } else if (isHolidayStandby) {
-                        if (isDriverOnly) {
-                            newTx.displayHours = 10.0;
-                            newTx.hours = 10.0;
-                        } else {
-                            newTx.displayHours = (isTechnical && isWk && hasDutyOnWeekendDay) ? 0 : 2.0;
-                            newTx.hours = newTx.displayHours;
-                        }
+                        const hVal = isDriverOnly ? 10.0 : 2.0;
+                        newTx.displayHours = hVal;
+                        newTx.hours = hVal;
                     } else if (isStandby) {
                         const isSpecialOneHourWeekend = (dateLocal === '2026-07-04');
                         if (isDriverOnly) {
                             const hVal = (isWk && !isSpecialOneHourWeekend) ? 10.0 : 1.0;
                             newTx.displayHours = hVal;
                             newTx.hours = hVal;
-                        } else if (isYerDestekPerson) {
-                            const hVal = isWk ? 2.0 : 1.0;
-                            newTx.displayHours = hVal;
-                            newTx.hours = hVal;
                         } else {
-                            const hVal = (isTechnical && isWk) ? (hasDutyOnWeekendDay ? 0 : 2.0) : 1.0;
+                            // Destek personeli, memurlar ve şoför harici tüm personele hafta sonu otomatik 2 saat
+                            const hVal = (isWk && !isSpecialOneHourWeekend) ? 2.0 : (isSpecialOneHourWeekend ? 1.0 : 1.0);
                             newTx.displayHours = hVal;
                             newTx.hours = hVal;
                         }
@@ -2010,20 +2027,6 @@
                     return newTx;
                 });
             }, [transactions, attendanceRecords, personnel, personnelMap]);
-
-            // Save Transactions
-            useEffect(() => {
-                if (!loading) {
-                    safeLocalStorageSetItem('ogm_overtime_tx', JSON.stringify(transactions));
-                }
-            }, [transactions, loading]);
-
-            // Save Attendance
-            useEffect(() => {
-                if (!loading) {
-                    safeLocalStorageSetItem('ogm_attendance', JSON.stringify(attendanceRecords));
-                }
-            }, [attendanceRecords, loading]);
 
             // Calculations
             const stats = useMemo(() => {
@@ -2063,6 +2066,7 @@
                     if (clean && map[clean]) return clean;
                     const raw = String(rawId || '').trim().toLowerCase();
                     if (raw && map[raw]) return raw;
+                    if (clean && map['p' + clean]) return 'p' + clean;
                     return clean || raw;
                 };
 
@@ -2073,7 +2077,7 @@
                     const oIsAuto = oId.startsWith('auto-') || oId.includes('sync');
                     const oDesc = String(oTx.description || oTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                     const oType = oTx.type || oTx.TYPE || '';
-                    const oIsPlansiz = (!oIsAuto && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED')) || oTx.isPlansiz === true || oTx.IS_PLANSIZ === true || oId.startsWith('manual-tx') || oDesc.includes('PLANSIZ');
+                    const oIsPlansiz = oTx.isPlansiz === true || oTx.IS_PLANSIZ === true || oId.startsWith('manual-tx') || oId.startsWith('manual-override') || oDesc.includes('PLANSIZ') || (!oIsAuto && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED'));
                     const oIsStandby = oIsAuto && !oIsPlansiz && (oId.includes('standby') || oDesc.includes('BEKLEME'));
                     const oIsFmi = !oIsPlansiz && (oDesc.includes('FMİ') || oDesc.includes('FMI') || oDesc.includes('F.M.İ'));
                     if (oIsPlansiz || (!oIsStandby && !oIsFmi && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED'))) {
@@ -2117,30 +2121,35 @@
                 });
 
                 const txDedupMap = new Map();
-                filteredTransactions.forEach(tx => {
+                filteredTransactions.forEach((tx, txIndex) => {
                     let pid = getStandardId(tx.personId || tx.PERSONID);
                     if (!map[pid] && (tx.personName || tx.PERSONNAME)) {
-                        const txName = String(tx.personName || tx.PERSONNAME).trim().toLocaleUpperCase('tr-TR');
-                        const matchedPerson = personnel.find(p => String(p.fullName).trim().toLocaleUpperCase('tr-TR') === txName);
+                        const txName = tx.personName || tx.PERSONNAME;
+                        const matchedPerson = personnel.find(p => matchPersonnelName(txName, p.fullName));
                         if (matchedPerson) {
-                            pid = String(matchedPerson.id).trim().toLowerCase();
+                            pid = getStandardId(matchedPerson.id);
                         }
+                    }
+                    if (!pid || !map[pid]) {
+                        const clean = cleanPersonnelId(tx.personId || tx.PERSONID);
+                        if (clean && map[clean]) pid = clean;
+                        else if (clean && map['p' + clean]) pid = 'p' + clean;
                     }
                     if (!pid || !map[pid]) return;
 
-                    const txDateStr = String(tx.date || tx.DATE || '');
-                    if (!txDateStr.startsWith('2026')) return;
-
-                    const status = String(tx.status || tx.STATUS || '').toUpperCase();
-                    if (status !== 'APPROVED' && status !== 'ONAYLANDI' && status !== 'ONAYLI' && (tx.status || tx.STATUS)) return;
-
                     const txId = String(tx.id || tx.ID || '');
                     const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
-                    const dateStr = formatDateLocal(tx.date || tx.DATE);
 
                     const isAuto = txId.toLowerCase().startsWith('auto-') || txId.toLowerCase().includes('sync');
                     const txType = tx.type || tx.TYPE || '';
-                    const isPlansiz = (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED')) || tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.toLowerCase().startsWith('manual-tx') || descUpper.includes('PLANSIZ');
+                    const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.toLowerCase().startsWith('manual-tx') || txId.toLowerCase().startsWith('manual-override') || txId.toLowerCase().startsWith('plansiz') || txId.toLowerCase().startsWith('sheet_tx') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
+
+                    const dateStr = formatDateLocal(tx.date || tx.DATE);
+                    if (!isPlansiz && (!dateStr || !dateStr.startsWith('2026'))) return;
+
+                    const status = String(tx.status || tx.STATUS || '').toUpperCase();
+                    if (status === 'REJECTED' || status === 'REDDEDİLDİ' || status === 'RETTEDİLDİ') return;
+
                     const hasBeklemeInText = isAuto && !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.toLowerCase().includes('standby') || txId.toLowerCase().includes('hstandby') || txId.toLowerCase().includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                     const dayType = getDayType(dateStr) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || tx.DAYTYPE || getDayType(dateStr));
                     const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
@@ -2160,8 +2169,9 @@
                     else if (isDuty || isPlansiz) cat = 'DUTY';
                     else if (isFmi || txType === TRANSACTION_TYPES.USED || txType === 'USED') cat = 'USED';
 
+                    // Plansız işlemler her satırı bağımsız bir kayıt olarak korunur, asla ezilmez
                     const key = isPlansiz 
-                        ? `${pid}_plansiz_${dateStr}_${txId}_${tx.hours || tx.HOURS || 0}_${descUpper}_${tx.timestamp || tx.TIMESTAMP || Math.random()}`
+                        ? `${pid}_plansiz_${tx.id || tx.ID || txId || 'row'}_${txIndex}`
                         : ((isAuto ? `${pid}_${dateStr}_${cat}` : `${pid}_${txId || Math.random()}_${dateStr}_${cat}`));
                     const existing = txDedupMap.get(key);
 
@@ -2187,33 +2197,37 @@
                 sortedTxs.forEach(tx => {
                     let pid = getStandardId(tx.personId || tx.PERSONID);
                     if (!map[pid] && (tx.personName || tx.PERSONNAME)) {
-                        const txName = String(tx.personName || tx.PERSONNAME).trim().toLocaleUpperCase('tr-TR');
-                        const matchedPerson = personnel.find(p => String(p.fullName).trim().toLocaleUpperCase('tr-TR') === txName);
+                        const txName = tx.personName || tx.PERSONNAME;
+                        const matchedPerson = personnel.find(p => matchPersonnelName(txName, p.fullName));
                         if (matchedPerson) {
-                            pid = String(matchedPerson.id).trim().toLowerCase();
+                            pid = getStandardId(matchedPerson.id);
                         }
                     }
+                    if (!pid || !map[pid]) {
+                        const clean = cleanPersonnelId(tx.personId || tx.PERSONID);
+                        if (clean && map[clean]) pid = clean;
+                        else if (clean && map['p' + clean]) pid = 'p' + clean;
+                    }
                     if (map[pid]) {
-                        const txDateStr = String(tx.date || tx.DATE || '');
-                        if (!txDateStr.startsWith('2026')) return;
-
-                        const status = String(tx.status || tx.STATUS || '').toUpperCase();
-                        if (status !== 'APPROVED' && status !== 'ONAYLANDI' && status !== 'ONAYLI' && (tx.status || tx.STATUS)) return;
-
                         const txId = String(tx.id || tx.ID || '');
                         const isAuto = txId.startsWith('auto-') || txId.includes('sync');
                         const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                         const txLoc = String(tx.location || tx.DUTY_LOC || tx.LOCATION || '').toLocaleUpperCase('tr-TR');
                         const txNote = String(tx.note || tx.NOTE || '').toLocaleUpperCase('tr-TR');
+                        const txType = tx.type || tx.TYPE || '';
+                        const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.toLowerCase().startsWith('manual-tx') || txId.toLowerCase().startsWith('manual-override') || txId.toLowerCase().startsWith('plansiz') || txId.toLowerCase().startsWith('sheet_tx') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
+
                         const dateStr = formatDateLocal(tx.date || tx.DATE);
+                        if (!isPlansiz && (!dateStr || !dateStr.startsWith('2026'))) return;
+
+                        const status = String(tx.status || tx.STATUS || '').toUpperCase();
+                        if (status === 'REJECTED' || status === 'REDDEDİLDİ' || status === 'RETTEDİLDİ') return;
+
                         const dayType = getDayType(dateStr) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || tx.DAYTYPE || getDayType(dateStr));
                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                         
-                        if (isOverseas(txLoc) || isOverseas(descUpper) || isOverseas(txNote)) return;
-                        if (descUpper.includes('YURT DIŞI') || descUpper.includes('YURTDIŞI') || descUpper.includes('OVERSEAS') || txNote.includes('YURT DIŞI') || txNote.includes('YURTDIŞI') || txNote.includes('OVERSEAS')) return;
-
-                        const txType = tx.type || tx.TYPE || '';
-                        const isPlansiz = (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED')) || tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.toLowerCase().startsWith('manual-tx') || descUpper.includes('PLANSIZ');
+                        if (!isPlansiz && (isOverseas(txLoc) || isOverseas(descUpper) || isOverseas(txNote))) return;
+                        if (!isPlansiz && (descUpper.includes('YURT DIŞI') || descUpper.includes('YURTDIŞI') || descUpper.includes('OVERSEAS') || txNote.includes('YURT DIŞI') || txNote.includes('YURTDIŞI') || txNote.includes('OVERSEAS'))) return;
                         const hasBeklemeInText = isAuto && !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.toLowerCase().includes('standby') || txId.toLowerCase().includes('hstandby') || txId.toLowerCase().includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                         const isExplicitHolidayStandby = isAuto && !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.toLowerCase().includes('hstandby') || txId.toLowerCase().includes('holidaystandby'));
                         
@@ -2246,6 +2260,7 @@
                             const multP = isDriverP ? 1 : getMultiplier(dayType, isTechP);
                             const points = rawH * multP;
                             map[pid].score += points;
+                            map[pid].earned += rawH;
                             return;
                         }
 
@@ -2328,22 +2343,7 @@
                                      if (shiftUpper.includes('GECE')) dayStats.night += points; 
                                      else dayStats.day += points;
                                      map[pid].breakdown[dayType] = dayStats;
-                                 } else if (isTechnical && isWk && isStandbyInYoklama) {
-                                        points = 10.0;
-                                        if (isThisPlanned) {
-                                            if (processedDays.PLANNED_DUTY.has(dayKey)) skip = true;
-                                            else {
-                                                processedDays.PLANNED_DUTY.add(dayKey);
-                                                map[pid].plannedDutyWeekend.days += 1;
-                                                map[pid].plannedDutyWeekend.hours += points;
-                                            }
-                                        } else {
-                                            const dayStats = map[pid].breakdown[dayType] || { day: 0, night: 0 };
-                                            if (String(tx.shift).toUpperCase().includes('GECE')) dayStats.night += points; 
-                                            else dayStats.day += points;
-                                            map[pid].breakdown[dayType] = dayStats;
-                                        }
-                                    } else if (isThisPlanned) {
+                                 } else if (isThisPlanned) {
                                         if (processedDays.PLANNED_DUTY.has(dayKey)) skip = true;
                                         else {
                                             processedDays.PLANNED_DUTY.add(dayKey);
@@ -2602,8 +2602,8 @@
                             showToast("Talep incelendi, onaylandı ve sisteme işlendi.");
 
                             // Background sync
-                            apiCall('approve_overtime', { id: selectedPendingTx.id, transaction: updatedTx }, OVERTIME_SCRIPT_URL)
-                                .catch(err => showToast("Sunucu onaylama uyarısı: " + (err.message || err), "error"));
+//                             apiCall('approve_overtime', { id: selectedPendingTx.id, transaction: updatedTx }, OVERTIME_SCRIPT_URL)
+//                                 .catch(err => showToast("Sunucu onaylama uyarısı: " + (err.message || err), "error"));
                         } catch (err) {
                             showToast("Onaylama hatası: " + (err.message || err), "error");
                         } finally {
@@ -2756,9 +2756,6 @@
                                     finalHours = Math.max(0, finalHours - 1);
                                     showToast(`Bekleme gününde hafta içi mesaisi için 1 saat düşülerek ${finalHours} saat olarak kaydedildi.`, 'warning');
                                 }
-                            } else if (isTechPerson && isWk && modalType === 'add') {
-                                finalHours = 10.0;
-                                showToast(`Personel (OGM1) BEKLEME iken hafta sonu mesaiye geldiği için 10 saat mesai tanımlandı.`, 'warning');
                             } else if (isDriverPerson) {
                                 if (modalType === 'add') {
                                     finalHours = Math.max(0, finalHours - 1);
@@ -2830,7 +2827,9 @@
                         description: formData.description || '',
                         status: 'APPROVED',
                         note: formData.description || '',
-                        isPlanned: false
+                        isPlanned: false,
+                        isPlansiz: true,
+                        sheet: 'Plansız İşlemler'
                     };
 
                     const updatedList = [newTx, ...transactions];
@@ -2848,8 +2847,8 @@
                     const savedModalType = modalType;
 
                     // Background sync (Non-blocking async call to Apps Script)
-                    apiCall('save_overtime', { transaction: newTx })
-                        .catch(err => showToast("Sunucuya kayıt uyarısı: " + (err.message || err), "error"));
+//                     apiCall('save_overtime', { transaction: newTx, sheet: 'Plansız İşlemler' })
+//                         .catch(err => showToast("Sunucuya kayıt uyarısı: " + (err.message || err), "error"));
 
                     setSuccessModalInfo({
                         person: savedPerson,
@@ -2881,8 +2880,8 @@
                     safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                     showToast("Kayıt listeden silindi.");
 
-                    apiCall('delete_overtime', { id })
-                        .catch(err => showToast("Silme sunucu uyarısı: " + (err.message || err), "error"));
+//                     apiCall('delete_overtime', { id })
+//                         .catch(err => showToast("Silme sunucu uyarısı: " + (err.message || err), "error"));
                 });
             };
 
@@ -3163,7 +3162,9 @@
                         const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                         const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
-                        const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || descUpper.includes('PLANSIZ');
+                        const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                                            const txType = tx.type || tx.TYPE || '';
+                                            const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                         const hasBeklemeInText = !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                         const isExplicitHolidayStandby = !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby'));
                         const isHolidayStandby = !isPlansiz && (tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
@@ -3172,7 +3173,6 @@
                         const isPlannedDuty = !isPlansiz && (tx.isPlannedDuty !== undefined ? tx.isPlannedDuty : (!hasBeklemeInText && !isFmi && !descUpper.includes('PLANSIZ') && !descUpper.includes('MESAİ') && !descUpper.includes('MESAI') && (txId.includes('auto_duty') || descUpper.includes('OTOMATİK GÖREV') || descUpper.includes('PLANLI GÖREV') || descUpper.includes('PLANLI GOREV') || tx.isPlanned === true)));
                         const isDuty = isPlansiz || (tx.isDuty !== undefined ? tx.isDuty : (!hasBeklemeInText && !isStandby && !isHolidayStandby && !isPlannedDuty && !isFmi && (txId.includes('duty') || descUpper.includes('GÖREV') || descUpper.includes('GOREV') || descUpper.includes('MESAİ') || descUpper.includes('MESAI') || tx.type === TRANSACTION_TYPES.EARNED)));
                         const isEarned = tx.type === TRANSACTION_TYPES.EARNED || isStandby || isHolidayStandby || isPlannedDuty || isPlansiz;
-                        const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
 
                         let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
                         const isWk = checkIsWeekend(tx.date);
@@ -3183,6 +3183,8 @@
 
                         if (isPlansiz) {
                             hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.HOURS !== undefined ? tx.HOURS : (tx.displayHours || 0)));
+                        } else if (!isAuto && (tx.hours !== undefined || tx.displayHours !== undefined)) {
+                            hours = parseFloat(tx.hours !== undefined ? tx.hours : tx.displayHours);
                         } else if (isDriverOnly && (isHolidayStandby || isStandby)) {
                             const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
                             if (isHolidayStandby) {
@@ -3192,21 +3194,14 @@
                             } else {
                                 hours = 1.0;
                             }
-                        } else if (isYerDestekPerson && isStandby) {
-                            hours = isWk ? 2.0 : 1.0;
-                        } else if (isYerDestekPerson && isHolidayStandby) {
+                        } else if (isHolidayStandby) {
                             hours = 2.0;
-                        } else if (!isAuto && (tx.hours !== undefined || tx.displayHours !== undefined)) {
-                            hours = parseFloat(tx.hours !== undefined ? tx.hours : tx.displayHours);
-                        } else if (isTechnical && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
-                            hours = 10.0;
-                        } else if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
+                        } else if (isStandby) {
+                            const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
+                            hours = (isWk && !isSpecialOneHourWeekend) ? 2.0 : 1.0;
+                        } else if (isAuto || isPlannedDuty || isFmi) {
                             if (isPlannedDuty) {
                                 hours = isWk ? 11.0 : 3.0;
-                            } else if (isHolidayStandby) {
-                                hours = 2.0;
-                            } else if (isStandby) {
-                                hours = (isTechnical && isWk) ? 2.0 : 1.0;
                             } else if (isFmi) {
                                 hours = 8.0;
                             }
@@ -3471,7 +3466,9 @@
                         const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                         
-                        const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || descUpper.includes('PLANSIZ');
+                        const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                        const txType = tx.type || tx.TYPE || '';
+                        const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                         const hasBeklemeInText = !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                         const isExplicitHolidayStandby = !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby'));
                         const isHolidayStandby = !isPlansiz && (tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
@@ -3481,7 +3478,6 @@
                         const isDuty = isPlansiz || (tx.isDuty !== undefined ? tx.isDuty : (!hasBeklemeInText && !isStandby && !isHolidayStandby && !isPlannedDuty && !isFmi && (txId.includes('duty') || descUpper.includes('GÖREV') || descUpper.includes('GOREV') || descUpper.includes('MESAİ') || descUpper.includes('MESAI') || tx.type === TRANSACTION_TYPES.EARNED)));
                          const isEarned = tx.type === TRANSACTION_TYPES.EARNED || isStandby || isHolidayStandby || isPlannedDuty || isPlansiz;
                          const isPending = tx.status === 'PENDING';
-                         const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
 
                          let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
 
@@ -3502,21 +3498,16 @@
                              } else {
                                  hours = 1.0;
                              }
-                         } else if (isYerDestekPerson && isStandby) {
-                             hours = isWk ? 2.0 : 1.0;
-                         } else if (isYerDestekPerson && isHolidayStandby) {
-                             hours = 2.0;
                          } else if (!isAuto && (tx.hours !== undefined || tx.displayHours !== undefined)) {
                              hours = parseFloat(tx.hours !== undefined ? tx.hours : tx.displayHours);
-                         } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
-                             hours = 10.0;
-                         } else if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
+                         } else if (isHolidayStandby) {
+                             hours = 2.0;
+                         } else if (isStandby) {
+                             const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
+                             hours = (isWk && !isSpecialOneHourWeekend) ? 2.0 : 1.0;
+                         } else if (isAuto || isPlannedDuty || isFmi) {
                              if (isPlannedDuty) {
                                  hours = isWk ? 11.0 : 3.0;
-                             } else if (isHolidayStandby) {
-                                 hours = 2.0;
-                             } else if (isStandby) {
-                                 hours = (isTechPerson && isWk) ? 2.0 : 1.0;
                              } else if (isFmi) {
                                  hours = 8.0;
                              }
@@ -3527,11 +3518,9 @@
 
                         let descText = tx.description || tx.DESCRIPTION || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')));
                         if (isHolidayStandby) {
-                            if (!descText.includes('RESMİ TATİL')) descText += isDriverOnly ? ' (RESMİ TATİL BEKLEME +10S)' : ' (RESMİ TATİL +2P)';
+                            if (!descText.includes('RESMİ TATİL')) descText += isDriverOnly ? ' (RESMİ TATİL BEKLEME +10S)' : ' (RESMİ TATİL +2S)';
                         } else if (isStandby) {
-                            if (!descText.includes('BEKLEME')) descText += isDriverOnly ? (isWk ? ' (HAFTA SONU BEKLEME +10S)' : ' (HAFTA İÇİ BEKLEME +1S)') : (isYerDestekPerson ? (isWk ? ' (HAFTA SONU BEKLEME +2S)' : ' (BEKLEME +1S)') : ((isTechPerson && isWk) ? ' (HAFTA SONU BEKLEME +2P)' : ' (BEKLEME +1P)'));
-                        } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
-                            descText += ' (BEKLEME MESAİSİ +10S)';
+                            if (!descText.includes('BEKLEME')) descText += isDriverOnly ? (isWk ? ' (HAFTA SONU BEKLEME +10S)' : ' (HAFTA İÇİ BEKLEME +1S)') : (isWk ? ' (HAFTA SONU BEKLEME +2S)' : ' (BEKLEME +1S)');
                         }
 
                         row.getCell(3).value = descText;
@@ -3885,8 +3874,8 @@
                 safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                 showToast("İşlem onaylandı.");
 
-                apiCall('approve_overtime', { id, transaction: tx })
-                    .catch(err => showToast("Onaylama sunucu uyarısı: " + (err.message || err), "error"));
+//                 apiCall('approve_overtime', { id, transaction: tx })
+//                     .catch(err => showToast("Onaylama sunucu uyarısı: " + (err.message || err), "error"));
             };
 
             const rejectTransaction = async (id) => {
@@ -3895,8 +3884,8 @@
                 safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                 showToast("Talep silindi.");
 
-                apiCall('delete_overtime', { id })
-                    .catch(err => showToast("Silme sunucu uyarısı: " + (err.message || err), "error"));
+//                 apiCall('delete_overtime', { id })
+//                     .catch(err => showToast("Silme sunucu uyarısı: " + (err.message || err), "error"));
                 return true;
             };
 
@@ -3982,11 +3971,11 @@
                         updatedTx.id = `manual-override-${Date.now()}`;
                         updatedTx.status = 'APPROVED';
                         
-                        await apiCall('save_overtime', { transaction: updatedTx });
+                        // apiCall removed
                         setTransactions([...transactions, updatedTx]);
                     } else {
                         // Mevcut kaydı güncelle
-                        await apiCall('approve_overtime', { id: tx.id, transaction: updatedTx });
+                        // apiCall removed
                         setTransactions(transactions.map(t => t.id === tx.id ? updatedTx : t));
                     }
                     setEditingTxId(null);
@@ -4140,7 +4129,7 @@
                                             safeLocalStorageSetItem('ogm_attendance', JSON.stringify(updatedRecords));
 
                                             try {
-                                                await apiCall('save_attendance', { record: newRecord, records: [newRecord] }, PERSONNEL_SCRIPT_URL);
+                                                // apiCall removed as per request
                                                 showToast(`${p.fullName} için yoklama güncellendi.`);
                                                 // Reload data to fetch the updated auto-sync transactions
                                                 await loadData();
@@ -4281,154 +4270,6 @@
                         </div>
                     )}
 
-                    {activeTab === 'history' && (
-                        <Card title="Son İşlemler" icon="History">
-                            <div className="flex justify-end mb-4">
-                                <button 
-                                    onClick={() => {
-                                        const allRows = transactions.flatMap(tx => {
-                                            const startStr = tx.date;
-                                            if (!startStr) return [];
-                                            const start = new Date(startStr + 'T00:00:00');
-                                            const daysCount = tx.type === TRANSACTION_TYPES.USED ? (parseInt(tx.days) || 1) : 1;
-                                            const subRows = [];
-                                            for (let i = 0; i < daysCount; i++) {
-                                                const current = new Date(start);
-                                                current.setDate(start.getDate() + i);
-                                                const dStr = formatDateLocal(current);
-                                                const typeCode = tx.type === TRANSACTION_TYPES.USED ? '4' : '1';
-                                                const statusStr = tx.type === TRANSACTION_TYPES.USED ? 'İzinli' : 'Mesai';
-                                                subRows.push(`${SYSTEM_ID}\t${dStr}\t${tx.personId}\t${statusStr}\t\t\tFMİ\t${tx.description || ''}\t${current.getMonth()+1}\t${current.getFullYear()}`);
-                                            }
-                                            return subRows;
-                                        });
-                                        navigator.clipboard.writeText(allRows.join('\n')).then(() => {
-                                            alert(`${allRows.length} satır Yoklama formatında toplu olarak kopyalandı.`);
-                                        });
-                                    }}
-                                    className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg transition-all flex items-center gap-2"
-                                >
-                                    <Icon name="Copy" size={14} /> TÜMÜNÜ YOKLAMA FORMATINDA KOPYALA
-                                </button>
-                            </div>
-                            {transactions.length === 0 ? (
-                                <div className="py-12 text-center">
-                                    <Icon name="Database" size={40} className="mx-auto mb-4 text-forest-700" />
-                                    <p className="text-forest-500">Henüz bir işlem kaydı bulunmuyor.</p>
-                                </div>
-                            ) : (
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-sm text-left">
-                                        <thead className="text-[11px] text-forest-400 uppercase font-black tracking-widest border-b border-forest-800">
-                                            <tr>
-                                                <th className="px-4 py-3">Personel</th>
-                                                <th className="px-4 py-3">Tarih</th>
-                                                <th className="px-4 py-3">İşlem</th>
-                                                <th className="px-4 py-3 text-center">Süre</th>
-                                                <th className="px-4 py-3 text-center">Saat</th>
-                                                <th className="px-4 py-3">Açıklama</th>
-                                                <th className="px-4 py-3">Durum</th>
-                                                <th className="px-4 py-3 text-right">Eylem</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-forest-800/50">
-                                            {filteredTransactions.map(tx => (
-                                                <tr 
-                                                    key={tx.id} 
-                                                    onDoubleClick={() => {
-                                                        if (tx.status === 'PENDING') {
-                                                            openPendingDetailModal(tx);
-                                                        }
-                                                    }}
-                                                    title={tx.status === 'PENDING' ? 'Talebi incelemek ve onaylamak için çift tıklayın' : ''}
-                                                    className={`hover:bg-forest-800/20 transition-colors ${tx.status === 'PENDING' ? 'cursor-pointer' : ''}`}
-                                                >
-                                                                <td className="px-4 py-4">
-                                                                    <div className="flex flex-col">
-                                                                        <span className="font-bold text-white text-sm">{tx.personName}</span>
-                                                                        <div className="flex items-center gap-2 mt-1">
-                                                                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-black uppercase ${tx.dayType === DAY_TYPES.HOLIDAY ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : tx.dayType === DAY_TYPES.WEEKEND ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-forest-800 text-forest-500'}`}>
-                                                                                {tx.dayType || '-'}
-                                                                            </span>
-                                                                            <span className="text-[9px] text-forest-600 font-bold uppercase">{tx.shift || 'Gündüz'}</span>
-                                                                        </div>
-                                                                        {tx.location && (
-                                                                            <span className="text-[10px] text-blue-400 font-black mt-1 uppercase flex items-center gap-1">
-                                                                                <Icon name="MapPin" size={10} /> {tx.location}
-                                                                            </span>
-                                                                        )}
-                                                                    </div>
-                                                                </td>
-                                                    <td className="px-4 py-4 font-medium text-forest-300 text-xs">
-                                                        {formatDate(tx.date)}
-                                                    </td>
-                                                    <td className="px-4 py-4">
-                                                        <span className={`px-2 py-1 rounded-md text-[10px] font-black uppercase ${tx.type === TRANSACTION_TYPES.EARNED ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
-                                                            {tx.type === TRANSACTION_TYPES.EARNED ? 'Kazanıldı' : 'Kullanıldı'}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-4 font-black text-center">
-                                                        <div className="flex flex-col">
-                                                            <span>{parseFloat(tx.hours || 0).toFixed(1)} s</span>
-                                                            {tx.type === TRANSACTION_TYPES.EARNED && Math.abs(parseFloat(tx.displayHours || 0) - parseFloat(tx.hours || 0)) > 0.1 && (
-                                                                <span className="text-[10px] text-forest-500 font-normal">Sisteme Aktarılan: {parseFloat(tx.displayHours).toFixed(1)} s</span>
-                                                            )}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-4 py-4 text-forest-500 text-xs text-center whitespace-nowrap">
-                                                        {tx.startTime && tx.endTime ? `${tx.startTime} - ${tx.endTime}` : '-'}
-                                                    </td>
-                                                    <td className="px-4 py-4 italic text-forest-400 max-w-xs truncate">{tx.description || tx.DESCRIPTION || '-'}</td>
-                                                    <td className="px-4 py-4">
-                                                        <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${tx.status === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-400' : tx.status === 'PENDING' ? 'bg-amber-500/20 text-amber-500' : 'bg-rose-500/20 text-rose-500'}`}>
-                                                            {tx.status === 'APPROVED' ? 'Onaylandı' : tx.status === 'PENDING' ? 'Beklemede' : tx.status}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-4 text-right">
-                                                        <div className="flex items-center justify-end gap-2">
-                                                            {adminRole && tx.status === 'PENDING' && (
-                                                                <button 
-                                                                    onClick={() => {
-                                                                        showConfirm('Bu işlemi onaylamak istiyor musunuz?', async () => {
-                                                                            try {
-                                                                                setLoading(true);
-                                                                                await apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL);
-                                                                                setTransactions(transactions.map(t => t.id === tx.id ? { ...t, status: 'APPROVED', approvedAt: new Date().toISOString() } : t));
-                                                                                showToast("İşlem onaylandı.");
-                                                                            } catch (e) {
-                                                                                showToast("Onay hatası: " + e.message, "error");
-                                                                            } finally {
-                                                                                setLoading(false);
-                                                                            }
-                                                                        });
-                                                                    }}
-                                                                    title="Onayla"
-                                                                    className="text-emerald-500 hover:text-emerald-400 p-2 bg-emerald-500/10 rounded-lg transition-colors flex items-center justify-center"
-                                                                >
-                                                                    <Icon name="CheckCircle2" size={14} />
-                                                                </button>
-                                                            )}
-                                                            <button 
-                                                                onClick={() => copyYoklamaFormat(tx)}
-                                                                title="Yoklama Formatında Kopyala"
-                                                                className="text-emerald-500 hover:text-emerald-400 p-2 bg-emerald-500/10 rounded-lg transition-colors flex items-center justify-center"
-                                                            >
-                                                                <Icon name="Copy" size={14} />
-                                                            </button>
-                                                            <button onClick={() => deleteTransaction(tx.id)} title="Kaydı Sil" className="text-red-500 hover:text-red-400 transition-colors p-2 bg-red-500/10 hover:bg-red-500/20 rounded-lg flex items-center justify-center">
-                                                                <Icon name="Trash2" size={14} />
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            )}
-                        </Card>
-                    )}
-
                     {activeTab === 'admin' && adminRole && (
                         <div className="animate-fade-in space-y-6">
                             <div className="flex items-center justify-between">
@@ -4510,14 +4351,14 @@
                                                                     {!(tx.type === TRANSACTION_TYPES.USED && !hasAttendanceFmi(tx)) ? (
                                                                         <button 
                                                                             onClick={() => {
-                                                                                showConfirm('Bu talebi onaylayıp Yoklama Aktar sayfasına ve personele işlemek istiyor musunuz?', async () => {
+                                                                                showConfirm('Bu talebi onaylamak istiyor musunuz?', async () => {
                                                                                     const updatedList = transactions.map(t => t.id === tx.id ? { ...t, status: 'APPROVED' } : t);
                                                                                     setTransactions(updatedList);
                                                                                     safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
-                                                                                    showToast("Talep onaylandı ve Yoklama Aktar listesine yazıldı.");
+                                                                                    showToast("Talep onaylandı.");
 
-                                                                                    apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL)
-                                                                                        .catch(e => showToast("Onaylama hatası: " + (e.message || e), "error"));
+//                                                                                     apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL)
+//                                                                                         .catch(e => showToast("Onaylama hatası: " + (e.message || e), "error"));
                                                                                 });
                                                                             }}
                                                                             className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white rounded-lg text-xs font-black transition-all flex items-center gap-1 border border-emerald-500/20"
@@ -4535,8 +4376,8 @@
                                                                                 safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                                                                                 showToast("Talep silindi.");
 
-                                                                                apiCall('delete_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL)
-                                                                                    .catch(e => showToast("Silme hatası: " + (e.message || e), "error"));
+//                                                                                 apiCall('delete_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL)
+//                                                                                     .catch(e => showToast("Silme hatası: " + (e.message || e), "error"));
                                                                             });
                                                                         }}
                                                                         className="p-1.5 bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white rounded-lg transition-all"
@@ -4721,11 +4562,9 @@
                                                         return (
                                                             <tr 
                                                                 key={p.id} 
-                                                                className="hover:bg-forest-800/30 cursor-pointer transition-colors active:bg-forest-700/50"
-                                                                onClick={() => {
-                                                                    setSelectedPerson(p);
-                                                                    setModalType('history');
-                                                                }}
+                                                                onClick={() => { setSelectedPerson(p); setModalType('history'); }}
+                                                                className="hover:bg-forest-800/40 transition-colors cursor-pointer group"
+                                                                title="Detaylı Mesai Dökümünü İncelemek İçin Tıklayın"
                                                             >
                                                                 <td className="px-4 py-4 text-forest-600 text-xs text-center font-bold">{index + 1}</td>
                                                                 <td className="px-4 py-4 font-bold text-white">
@@ -4977,13 +4816,13 @@
 
                     {/* Transaction Modal */}
                     <Modal 
-                        isOpen={modalType !== null} 
+                        isOpen={modalType === 'add' || modalType === 'use' || modalType === 'history' || selectedPendingTx !== null} 
                         isLoading={isSaving}
                         loadingText="İşlem Kaydediliyor..."
                         onClose={() => { if (!isSaving) { setModalType(null); setSelectedPerson(null); setSearchTerm(''); setSelectedPendingTx(null); } }} 
-                        sizeCls={modalType === 'history' ? 'max-w-3xl' : 'max-w-md'}
+                        sizeCls={modalType === 'history' ? 'max-w-4xl' : 'max-w-md'}
                         title={
-                            modalType === 'history' ? (selectedPerson?.fullName + ' - Detaylı Döküm') :
+                            modalType === 'history' ? (selectedPerson ? `${selectedPerson.fullName} - Detaylı Mesai Dökümü (2026)` : 'Detaylı Döküm') :
                             selectedPendingTx ? 'Talebi İncele ve Onayla' : 
                             (modalType === 'add' ? 'Fazla Mesai Kazanımı' : 'Mesai İzni Kullanımı')
                         }
@@ -4995,28 +4834,35 @@
                                     const normalizeDateSimple = (d) => formatDateLocal(d);
 
                                     const targetPid = normalizeId(selectedPerson?.id);
-                                    const targetName = String(selectedPerson?.fullName || '').toLocaleUpperCase('tr-TR');
+                                    const targetCleanId = cleanPersonnelId(selectedPerson?.id);
+                                    const targetName = cleanPersonnelName(selectedPerson?.fullName);
 
                                     const combined = filteredTransactions
                                         .filter(tx => {
                                             const pid = normalizeId(tx.personId || tx.PERSONID);
+                                            const pidClean = cleanPersonnelId(tx.personId || tx.PERSONID);
+                                            const txName = cleanPersonnelName(tx.personName || tx.PERSONNAME);
                                             const dateStr = normalizeDateSimple(tx.date || tx.DATE);
                                             const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                                             const txLoc = String(tx.location || tx.DUTY_LOC || '').toLocaleUpperCase('tr-TR');
                                             const txNote = String(tx.note || tx.NOTE || '').toLocaleUpperCase('tr-TR');
                                             
-                                            if (isOverseas(txLoc) || isOverseas(descUpper) || isOverseas(txNote)) return false;
-                                            
                                             const txId = String(tx.id || tx.ID || '').toLowerCase();
                                             const isAuto = txId.startsWith('auto-') || txId.includes('sync');
-                                            const isPlansiz = txId.startsWith('manual-tx') || tx.isPlansiz === true || tx.IS_PLANSIZ === true || descUpper.includes('PLANSIZ') || (!isAuto && (tx.type === TRANSACTION_TYPES.EARNED || tx.TYPE === 'EARNED'));
+                                            const txType = tx.type || tx.TYPE || '';
+                                            const isPlansiz = txId.startsWith('manual-tx') || txId.startsWith('manual-override') || txId.startsWith('plansiz') || txId.startsWith('sheet_tx') || tx.isPlansiz === true || tx.IS_PLANSIZ === true || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                                             
+                                            if (!isPlansiz && (isOverseas(txLoc) || isOverseas(descUpper) || isOverseas(txNote))) return false;
+                                            
+                                            // Person match: Check exact id, cleaned id, name equality/inclusion, or matchPersonnelName
+                                            const isPersonMatch = (pid && targetPid && pid === targetPid) || 
+                                                                 (pidClean && targetCleanId && pidClean === targetCleanId) ||
+                                                                 (txName && targetName && (txName === targetName || (txName.length > 3 && targetName.length > 3 && (txName.includes(targetName) || targetName.includes(txName))))) ||
+                                                                 matchPersonnelName(tx.personName || tx.PERSONNAME, selectedPerson?.fullName);
+
                                             if (isPlansiz) {
-                                                // Always include manual/unplanned records for the target person
-                                                const isPersonMatch = pid === targetPid || 
-                                                                     (tx.personName && String(tx.personName).toLocaleUpperCase('tr-TR') === targetName) ||
-                                                                     (tx.PERSONNAME && String(tx.PERSONNAME).toLocaleUpperCase('tr-TR') === targetName);
-                                                return isPersonMatch && dateStr.startsWith('2026');
+                                                // Plansız işlemler sayfasından gelen bu isme ait tüm kayıtlar koşulsuz gösterilir
+                                                return isPersonMatch;
                                             }
 
                                             const isAnyDuty = descUpper.includes('GÖREV') || descUpper.includes('GOREV');
@@ -5026,11 +4872,6 @@
                                                 if (!isPlannedDutySeason(dateStr)) return false;
                                             }
 
-                                            // Person match
-                                            const isPersonMatch = pid === targetPid || 
-                                                                 (tx.personName && String(tx.personName).toLocaleUpperCase('tr-TR') === targetName) ||
-                                                                 (tx.PERSONNAME && String(tx.PERSONNAME).toLocaleUpperCase('tr-TR') === targetName);
-
                                             // Only allow relevant records
                                             return isPersonMatch && 
                                                    dateStr.startsWith('2026') &&
@@ -5039,24 +4880,34 @@
 
                                     const fmiDeductions = attendanceRecords.filter(r => {
                                         const pid = normalizeId(r.personId || r.PERSON_ID);
+                                        const pidClean = cleanPersonnelId(r.personId || r.PERSON_ID);
                                         const status = String(r.status || r.STATUS || '').toLocaleUpperCase('tr-TR');
-                                        const leave = String(r.leaveType || r.LEAVE_TYPE || '').toLocaleUpperCase('tr-TR').replace(/\./g, '');
+                                        const normStatus = status.replace(/\./g, '');
+                                        const leave = String(r.leaveType || r.LEAVE_TYPE || r.LEAVE_TYI || '').toLocaleUpperCase('tr-TR');
+                                        const cleanLeave = leave.replace(/\./g, '').trim();
                                         const note = String(r.note || r.NOTE || '').toLocaleUpperCase('tr-TR');
                                         const dateStr = normalizeDateSimple(r.date || r.DATE);
-                                        const isFmi = (status.includes('İZİN') && leave.includes('FMI')) || status.includes('FMI') || status.includes('FMİ') || leave.includes('FMİ') || note.includes('FMİ') || note.includes('FMI');
-                                        return pid === targetPid && dateStr.startsWith('2026') && isFmi;
+                                        const isStatusIzin = normStatus.includes('İZİN') || normStatus.includes('IZIN');
+                                        const isLeaveFmi = cleanLeave === 'FMİ' || cleanLeave === 'FMI' || cleanLeave.includes('FMİ') || cleanLeave.includes('FMI');
+                                        const isStatusFmi = normStatus.includes('FMİ') || normStatus.includes('FMI');
+                                        const isFmi = (isStatusIzin && isLeaveFmi) || isStatusFmi || cleanLeave.includes('FMİ') || cleanLeave.includes('FMI') || note.includes('FMİ') || note.includes('FMI');
+                                        const isMatch = pid === targetPid || (pidClean && targetCleanId && pidClean === targetCleanId);
+                                        return isMatch && dateStr.startsWith('2026') && isFmi;
                                     }).map(r => ({
-                                        id: `fmi-auto-${normalizeDateSimple(r.date || r.DATE)}`,
+                                        id: r.id ? `fmi-${r.id}` : `fmi-auto-${normalizeDateSimple(r.date || r.DATE)}`,
+                                        attendanceId: r.id,
                                         date: normalizeDateSimple(r.date || r.DATE),
                                         type: TRANSACTION_TYPES.USED,
                                         hours: 8,
-                                        description: 'FMİ İZİNİ (YOKLAMA DÜŞÜMÜ)',
+                                        description: 'FMİ İZNİ (YOKLAMA DÜŞÜMÜ)',
                                         status: 'APPROVED',
-                                        isFmi: true
+                                        isFmi: true,
+                                        note: r.note || ''
                                     }));
 
                                     const gorevSyncs = attendanceRecords.filter(r => {
                                         const pid = normalizeId(r.personId || r.PERSON_ID);
+                                        const pidClean = cleanPersonnelId(r.personId || r.PERSON_ID);
                                         const status = String(r.status || r.STATUS || '').toLocaleUpperCase('tr-TR');
                                         const loc = String(r.location || r.DUTY_LOC || r.DUTY_LOCATION || '').toLocaleUpperCase('tr-TR');
                                         const note = String(r.note || r.NOTE || '').toLocaleUpperCase('tr-TR');
@@ -5065,8 +4916,9 @@
                                         const isBakBnu = note.includes('BAK') || note.includes('BNU') || status.includes('BAK') || status.includes('BNU');
                                         const isPlanned = r.isPlanned === true || String(r.isPlanned || '').toLocaleUpperCase('tr-TR').includes('PLANLI');
                                         const isOverseasDuty = isOverseas(loc) || isOverseas(note) || isOverseas(status);
+                                        const isMatch = pid === targetPid || (pidClean && targetCleanId && pidClean === targetCleanId);
 
-                                        return pid === targetPid && 
+                                        return isMatch && 
                                                dateStr.startsWith('2026') &&
                                                (status === 'GÖREV' || status.includes('GÖREV') || status.includes('GOREV')) &&
                                                isPlanned &&
@@ -5109,14 +4961,16 @@
 
                                     const standbySyncs = attendanceRecords.filter(r => {
                                         const pid = normalizeId(r.personId || r.PERSON_ID);
+                                        const pidClean = cleanPersonnelId(r.personId || r.PERSON_ID);
                                         const status = String(r.status || r.STATUS || '').toLocaleUpperCase('tr-TR');
                                         const note = String(r.note || r.NOTE || '').toLocaleUpperCase('tr-TR');
                                         const loc = String(r.location || r.DUTY_LOC || r.DUTY_LOCATION || '').toLocaleUpperCase('tr-TR');
                                         const dateStr = normalizeDateSimple(r.date || r.DATE);
                                         
                                         const isExcluded = status.includes('İZİN') || status.includes('IZIN') || status.includes('RAPOR') || status.includes('İSTİRAHAT') || status.includes('HASTANE');
+                                        const isMatch = pid === targetPid || (pidClean && targetCleanId && pidClean === targetCleanId);
 
-                                        return pid === targetPid && 
+                                        return isMatch && 
                                                dateStr.startsWith('2026') &&
                                                (status.includes('BEKLEME') || note.includes('BEKLEME') || loc.includes('BEKLEME')) &&
                                                !isExcluded;
@@ -5194,7 +5048,7 @@
                                     
                                     // Priority deduplication per day and category
                                      const seen = new Map();
-                                     rawItems.forEach(item => {
+                                     rawItems.forEach((item, itemIdx) => {
                                          const d = normalizeDateSimple(item.date || item.DATE);
                                          const descUpper = String(item.description || item.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                                          const txId = String(item.id || item.ID || '').toLowerCase();
@@ -5203,7 +5057,9 @@
                                          const itemType = item.type || item.TYPE || (txId.startsWith('manual-tx') ? TRANSACTION_TYPES.EARNED : '');
                                          const itemHours = item.hours !== undefined ? item.hours : (item.HOURS !== undefined ? item.HOURS : (item.displayHours !== undefined ? item.displayHours : 0));
                                          
-                                         const isPlansiz = item.isPlansiz === true || item.IS_PLANSIZ === true || txId.startsWith('manual-tx') || descUpper.includes('PLANSIZ');
+                                          const isManualOverride = txId.startsWith('manual-override');
+                                          const isAuto = txId.startsWith('auto-') || txId.includes('sync') || item.isFmi || item.isGorevSync || item.isStandbySync;
+                                         const isPlansiz = item.isPlansiz === true || item.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (itemType === TRANSACTION_TYPES.EARNED || itemType === 'EARNED'));
                                          const hasBeklemeInText = !isPlansiz && (item.isStandbySync === true || item.isStandby === true || item.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                                          const isExplicitHolidayStandby = !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby'));
                                          const isHolidayStandby = !isPlansiz && (item.isHolidayStandby !== undefined ? item.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
@@ -5231,12 +5087,10 @@
                                          item.date = d;
                                          item.type = itemType;
 
-                                         const isManualOverride = txId.startsWith('manual-override');
-                                         const isAuto = txId.startsWith('auto-') || txId.includes('sync') || item.isFmi || item.isGorevSync || item.isStandbySync;
                                          
-                                         const key = isPlansiz 
-                                             ? `plansiz_${d}_${txId}_${itemHours}_${descUpper}_${item.timestamp || item.TIMESTAMP || Math.random()}` 
-                                             : (d + '_' + category);
+                                         const key = isPlansiz
+                                             ? `plansiz_${item.id || item.ID || txId || "row"}_${itemIdx}`
+                                             : (d + "_" + category);
                                          const existing = seen.get(key);
                                          
                                          if (!existing) {
@@ -5447,7 +5301,9 @@
                                             const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                                             const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                                             
-                                            const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || descUpper.includes('PLANSIZ');
+                                            const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                                const txType = tx.type || tx.TYPE || '';
+                                const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                                             const hasBeklemeInText = !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                                             const isExplicitHolidayStandby = !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby'));
                                             const isHolidayStandby = !isPlansiz && (tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
@@ -5458,8 +5314,6 @@
                                             
                                             const isEarned = tx.type === TRANSACTION_TYPES.EARNED || isStandby || isHolidayStandby || isPlannedDuty || isPlansiz;
                                             const isPending = tx.status === 'PENDING';
-                                            
-                                            const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
 
                                             const formatDate = (dateStr) => {
                                                 if (!dateStr) return '';
@@ -5487,21 +5341,16 @@
                                                  } else {
                                                      hours = 1.0;
                                                  }
-                                             } else if (isYerDestekPerson && isStandby) {
-                                                 hours = isWk ? 2.0 : 1.0;
-                                             } else if (isYerDestekPerson && isHolidayStandby) {
-                                                 hours = 2.0;
                                              } else if (!isAuto && (tx.hours !== undefined || tx.displayHours !== undefined)) {
                                                  hours = parseFloat(tx.hours !== undefined ? tx.hours : tx.displayHours);
-                                             } else if (isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty)) {
-                                                 hours = 10.0;
-                                             } else if (isAuto || isPlannedDuty || isStandby || isHolidayStandby || isFmi) {
+                                             } else if (isHolidayStandby) {
+                                                 hours = 2.0;
+                                             } else if (isStandby) {
+                                                 const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
+                                                 hours = (isWk && !isSpecialOneHourWeekend) ? 2.0 : 1.0;
+                                             } else if (isAuto || isPlannedDuty || isFmi) {
                                                  if (isPlannedDuty) {
                                                      hours = isWk ? 11.0 : 3.0;
-                                                 } else if (isHolidayStandby) {
-                                                     hours = 2.0;
-                                                 } else if (isStandby) {
-                                                     hours = (isTechPerson && isWk) ? 2.0 : 1.0;
                                                  } else if (isFmi) {
                                                      hours = 8.0;
                                                  }
@@ -5524,17 +5373,11 @@
                                                                  <p className="font-black text-white text-xs sm:text-sm uppercase truncate">
                                                                      {tx.description || tx.DESCRIPTION || (isFmi ? 'FMİ İZİN KULLANIMI' : (isHolidayStandby ? 'RESMİ TATİL BEKLEME' : isStandby ? 'BEKLEME' : (isEarned ? 'MESAI KAZANIMI' : 'İZİN KULLANIMI')))}
                                                                  </p>
-                                                                 {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">{isDriverOnly ? 'RESMİ TATİL BEKLEME (+10S)' : 'RESMİ TATİL (+2P)'}</span>}
-                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">{isDriverOnly ? (isWk ? 'HAFTA SONU BEKLEME (+10S)' : 'HAFTA İÇİ BEKLEME (+1S)') : (isYerDestekPerson ? (isWk ? 'HAFTA SONU BEKLEME (+2S)' : 'HAFTA İÇİ BEKLEME (+1S)') : (isTechPerson && isWk ? 'HAFTA SONU BEKLEME (+2P)' : 'BEKLEME (+1P)'))}</span>}
+                                                                 {isHolidayStandby && <span className="bg-fuchsia-500/20 text-fuchsia-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-fuchsia-500/30">{isDriverOnly ? 'RESMİ TATİL BEKLEME (+10S)' : 'RESMİ TATİL (+2S)'}</span>}
+                                                                 {isStandby && <span className="bg-violet-500/20 text-violet-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-violet-500/30">{isDriverOnly ? (isWk ? 'HAFTA SONU BEKLEME (+10S)' : 'HAFTA İÇİ BEKLEME (+1S)') : (isWk ? 'HAFTA SONU BEKLEME (+2S)' : 'HAFTA İÇİ BEKLEME (+1S)')}</span>}
                                                                  {isDuty && <span className="bg-teal-500/20 text-teal-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-teal-500/30">PLANSIZ MESAİ</span>}
                                                                  {isPlannedDuty && <span className="bg-cyan-500/20 text-cyan-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-cyan-500/30">PLANLI GÖREV</span>}
                                                                  {isFmi && <span className="bg-rose-500/20 text-rose-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-rose-500/30">FMİ KULLANIMI</span>}
-                                                                 {isDriverPerson && isStandbyInYoklama && (isDuty || isPlannedDuty) && isAuto && (
-                                                                     <span className="bg-amber-500/20 text-amber-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-amber-500/30">BEKLEME GÜNÜ (-1S)</span>
-                                                                 )}
-                                                                 {isTechPerson && isWk && isStandbyInYoklama && (isDuty || isPlannedDuty) && (
-                                                                     <span className="bg-emerald-500/20 text-emerald-300 text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded border border-emerald-500/30">BEKLEME MESAİSİ (+10)</span>
-                                                                 )}
                                                                 {isAuto && (
                                                                     <span className="bg-forest-700 text-[8px] px-1 rounded text-forest-300 font-black uppercase">OTO</span>
                                                                 )}
