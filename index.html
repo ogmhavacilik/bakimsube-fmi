@@ -108,7 +108,7 @@
         };
 
         const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIcoXEFiU_BKRq5DuIMvsio5HYNvp_kMoQA0ynqht8BmKHq-FO6V28RnRQ9bwUFNay/exec";
-        const PERSONNEL_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzKdvHcUikiloAXbBV7KBaKxe4TYVV2JW94E_R-QZPB_nxQzV0FeMt-9EnPnrSWIKG0Lg/exec";
+        const PERSONNEL_SCRIPT_URL = OVERTIME_SCRIPT_URL;
         const SYSTEM_ID = "0005536572913";
 
         // --- HOLIDAY & CALCULATION CONFIG ---
@@ -197,6 +197,29 @@
             return `${y}-${m}-${day}`;
         };
 
+        const toCanonicalAscii = (str) => {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/İ/g, 'I')
+                .replace(/ı/g, 'I')
+                .replace(/i/g, 'I')
+                .replace(/I/g, 'I')
+                .replace(/ğ/g, 'G')
+                .replace(/Ğ/g, 'G')
+                .replace(/ü/g, 'U')
+                .replace(/Ü/g, 'U')
+                .replace(/ş/g, 'S')
+                .replace(/Ş/g, 'S')
+                .replace(/ö/g, 'O')
+                .replace(/Ö/g, 'O')
+                .replace(/ç/g, 'C')
+                .replace(/Ç/g, 'C')
+                .toUpperCase()
+                .trim();
+        };
+
         const cleanPersonnelId = (id) => {
             if (id === null || id === undefined) return '';
             const str = String(id).trim().toLowerCase();
@@ -205,17 +228,7 @@
 
         const cleanPersonnelName = (name) => {
             if (!name) return '';
-            return String(name)
-                .trim()
-                .toLocaleUpperCase('tr-TR')
-                .replace(/Ğ/g, 'G')
-                .replace(/Ü/g, 'U')
-                .replace(/Ş/g, 'S')
-                .replace(/İ/g, 'I')
-                .replace(/I/g, 'I')
-                .replace(/Ö/g, 'O')
-                .replace(/Ç/g, 'C')
-                .replace(/[^A-Z0-9]/g, '');
+            return toCanonicalAscii(name).replace(/[^A-Z0-9]/g, '');
         };
 
         const matchPersonnelName = (nameA, nameB) => {
@@ -224,16 +237,75 @@
             const b = cleanPersonnelName(nameB);
             if (!a || !b) return false;
             if (a === b) return true;
-            if (a.length >= 4 && b.length >= 4) {
+            
+            const wordsA = toCanonicalAscii(nameA).split(/\s+/).map(cleanPersonnelName).filter(w => w.length >= 2);
+            const wordsB = toCanonicalAscii(nameB).split(/\s+/).map(cleanPersonnelName).filter(w => w.length >= 2);
+            if (wordsA.length > 0 && wordsB.length > 0) {
+                if (wordsA.length === wordsB.length && wordsA.every(w => wordsB.includes(w))) return true;
+                const common = wordsA.filter(w => wordsB.includes(w));
+                if (common.length >= Math.min(wordsA.length, wordsB.length) && common.length >= 2) return true;
+                if (common.length === 1 && wordsA.length === 1 && wordsB.length === 1) return true;
+            }
+            if (a.length >= 6 && b.length >= 6) {
                 if (a.includes(b) || b.includes(a)) return true;
             }
-            const wordsA = String(nameA).toLocaleUpperCase('tr-TR').split(/\s+/).map(cleanPersonnelName).filter(w => w.length >= 3);
-            const wordsB = String(nameB).toLocaleUpperCase('tr-TR').split(/\s+/).map(cleanPersonnelName).filter(w => w.length >= 3);
-            if (wordsA.length > 0 && wordsB.length > 0) {
-                const common = wordsA.filter(w => wordsB.includes(w));
-                if (common.length >= Math.min(wordsA.length, wordsB.length) && common.length >= 1) return true;
-            }
             return false;
+        };
+
+        const normalizeDayType = (rawDayType, dateStr) => {
+            if (rawDayType && String(rawDayType).trim()) {
+                const c = toCanonicalAscii(rawDayType).replace(/[^A-Z]/g, '');
+                if (c.includes('RESMI') || c.includes('TATIL') || c.includes('BAYRAM') || c.includes('AREFE') || c.includes('HOLIDAY')) {
+                    return DAY_TYPES.HOLIDAY;
+                }
+                if (c.includes('SONU') || c.includes('SON') || c.includes('WEEKEND') || c.includes('PAZAR') || c.includes('CUMARTESI')) {
+                    return DAY_TYPES.WEEKEND;
+                }
+                if (c.includes('ICI') || c.includes('IC') || c.includes('WEEKDAY') || c.includes('NORMAL')) {
+                    return DAY_TYPES.WEEKDAY;
+                }
+            }
+            if (dateStr) {
+                return getDayType(dateStr);
+            }
+            return DAY_TYPES.WEEKDAY;
+        };
+
+        const normalizeShift = (rawShift) => {
+            const c = toCanonicalAscii(rawShift).replace(/[^A-Z]/g, '');
+            if (c.includes('GECE') || c.includes('NIGHT')) return 'GECE';
+            return 'GUNDUZ';
+        };
+
+        const isPlansizTransaction = (tx) => {
+            if (!tx) return false;
+            if (tx.isPlansiz === true || tx.IS_PLANSIZ === true) return true;
+            const id = String(tx.id || tx.ID || tx.TRANSACTION_ID || tx.ISLEM_ID || '').toLowerCase();
+            if (id.startsWith('plansiz') || id.startsWith('manual-tx') || id.startsWith('manual-override') || id.startsWith('sheet_tx')) return true;
+            const desc = toCanonicalAscii(tx.description || tx.DESCRIPTION || tx.aciklama || tx.ACIKLAMA || tx.gorev || tx.GOREV || '');
+            if (desc.includes('PLANSIZ')) return true;
+            const note = toCanonicalAscii(tx.note || tx.NOTE || tx.not || tx.NOT || '');
+            if (note.includes('PLANSIZ')) return true;
+            const txType = toCanonicalAscii(tx.type || tx.TYPE || tx.tip || tx.TIP || '');
+            const isAuto = id.startsWith('auto') || id.includes('auto') || id.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+            if (!isAuto && (txType === 'EARNED' || txType.includes('KAZAN') || txType.includes('MESAI'))) return true;
+            return false;
+        };
+
+        const getBreakdownData = (breakdownObj, targetDayType) => {
+            if (!breakdownObj) return { day: 0, night: 0 };
+            if (breakdownObj[targetDayType]) return breakdownObj[targetDayType];
+            const targetCanon = toCanonicalAscii(targetDayType).replace(/[^A-Z]/g, '');
+            for (const key of Object.keys(breakdownObj)) {
+                const keyCanon = toCanonicalAscii(key).replace(/[^A-Z]/g, '');
+                if (keyCanon === targetCanon || 
+                    (targetCanon.includes('ICI') && keyCanon.includes('ICI')) ||
+                    (targetCanon.includes('SONU') && keyCanon.includes('SONU')) ||
+                    (targetCanon.includes('RESMI') && (keyCanon.includes('RESMI') || keyCanon.includes('TATIL')))) {
+                    return breakdownObj[key];
+                }
+            }
+            return { day: 0, night: 0 };
         };
 
         const safeLocalStorageSetItem = (key, value) => {
@@ -404,7 +476,48 @@
             });
         };
 
-        const CLOUD_RUN_PROXY_URL = "https://ais-pre-inlnbhcb35ep74acdiakoj-216611645803.europe-west2.run.app/api/proxy";
+        const fetchJsonp = (url, timeout = 30000) => {
+            return new Promise((resolve, reject) => {
+                const callbackName = 'gas_cb_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
+                const script = document.createElement('script');
+                let timer = null;
+
+                const cleanup = () => {
+                    if (timer) clearTimeout(timer);
+                    if (script.parentNode) script.parentNode.removeChild(script);
+                    delete window[callbackName];
+                };
+
+                window[callbackName] = (res) => {
+                    cleanup();
+                    if (res && typeof res === 'object') {
+                        if (res.success && res.data) {
+                            resolve(res.data);
+                        } else if (res.data) {
+                            resolve(res.data);
+                        } else {
+                            resolve(res);
+                        }
+                    } else {
+                        resolve(res);
+                    }
+                };
+
+                timer = setTimeout(() => {
+                    cleanup();
+                    reject(new Error("Google E-Tablo yanıt zaman aşımı (JSONP)"));
+                }, timeout);
+
+                script.onerror = () => {
+                    cleanup();
+                    reject(new Error("Google E-Tablo betiğine bağlanılamadı (JSONP)"));
+                };
+
+                const sep = url.includes('?') ? '&' : '?';
+                script.src = `${url}${sep}callback=${callbackName}&_t=${Date.now()}`;
+                document.head.appendChild(script);
+            });
+        };
 
         // --- HELPER FUNCTIONS ---
         const apiCall = async (action, payload = {}, targetUrl = OVERTIME_SCRIPT_URL) => {
@@ -415,10 +528,35 @@
                 user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
             };
 
-            // 1. Try local server proxy (/api/proxy)
+            const isGetMethod = action === 'get_init_data' || Object.keys(payload).length === 0;
+
+            // 1. Direct GET to Google Apps Script (Bypasses CORS restrictions on all domains with Access-Control-Allow-Origin: *)
+            if (isGetMethod) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 45000);
+                    const directUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'action=' + encodeURIComponent(action) + '&_t=' + Date.now();
+                    const directRes = await fetch(directUrl, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' },
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    if (directRes.ok) {
+                        const json = await directRes.json().catch(() => null);
+                        if (json && json.success && json.data) {
+                            return json.data;
+                        }
+                    }
+                } catch (directGetErr) {
+                    lastError = directGetErr;
+                }
+            }
+
+            // 2. Try local server proxy (/api/proxy)
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 25000);
+                const timeoutId = setTimeout(() => controller.abort(), 45000);
 
                 const proxyRes = await fetch('/api/proxy', {
                     method: 'POST',
@@ -446,42 +584,35 @@
                 lastError = proxyErr;
             }
 
-            // 2. Try live Cloud Run backend proxy (essential when running on static hosts like Netlify)
-            try {
-                const isLocalOrSameHost = window.location.hostname === 'localhost' || window.location.hostname.includes('run.app');
-                if (!isLocalOrSameHost) {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 25000);
-
-                    const extProxyRes = await fetch(CLOUD_RUN_PROXY_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            targetUrl: targetUrl,
-                            ...reqBodyObj
-                        }),
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-
-                    if (extProxyRes.ok) {
-                        const json = await extProxyRes.json().catch(() => null);
-                        if (json && json.success) {
-                            if (typeof json.data === 'string' && json.data.trim().startsWith('<')) {
-                                throw new Error("Geçersiz sunucu yanıtı (HTML)");
-                            }
-                            return json.data;
-                        }
-                    }
-                }
-            } catch (extProxyErr) {
-                lastError = extProxyErr;
-            }
-
-            // 3. Try direct POST to Google Apps Script (Content-Type: text/plain bypasses CORS preflight)
+            // 3. Try deployed preview server proxy fallback (for external static sites like Netlify)
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 25000);
+                const timeoutId = setTimeout(() => controller.abort(), 45000);
+                const cloudRunProxyUrl = 'https://ais-pre-inlnbhcb35ep74acdiakoj-216611645803.europe-west2.run.app/api/proxy';
+                const cloudRunRes = await fetch(cloudRunProxyUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        targetUrl: targetUrl,
+                        ...reqBodyObj
+                    }),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                if (cloudRunRes.ok) {
+                    const json = await cloudRunRes.json().catch(() => null);
+                    if (json && json.success && json.data) {
+                        return json.data;
+                    }
+                }
+            } catch (cloudRunErr) {
+                lastError = cloudRunErr;
+            }
+
+            // 4. Try direct POST to Google Apps Script (text/plain bypasses CORS preflight)
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 45000);
 
                 const directRes = await fetch(targetUrl, {
                     method: 'POST',
@@ -495,7 +626,7 @@
                     const text = await directRes.text();
                     let directJson = null;
                     try { directJson = JSON.parse(text); } catch(e) {}
-                    if (directJson && directJson.success) {
+                    if (directJson && directJson.success && directJson.data) {
                         return directJson.data;
                     }
                 }
@@ -503,28 +634,28 @@
                 lastError = directErr;
             }
 
-            // 4. Try direct GET to Google Apps Script
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-                const getUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'action=' + encodeURIComponent(action);
-                const getRes = await fetch(getUrl, {
-                    method: 'GET',
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-
-                if (getRes.ok) {
-                    const text = await getRes.text();
-                    let getJson = null;
-                    try { getJson = JSON.parse(text); } catch(e) {}
-                    if (getJson && getJson.success) {
-                        return getJson.data;
+            // 5. Try public CORS proxy fallbacks
+            const publicProxies = [
+                (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+                (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`
+            ];
+            for (const proxyGen of publicProxies) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 35000);
+                    const queryStr = 'action=' + encodeURIComponent(action) + '&user=' + encodeURIComponent(reqBodyObj.user || '') + '&_t=' + Date.now();
+                    const targetWithQuery = targetUrl + (targetUrl.includes('?') ? '&' : '?') + queryStr;
+                    const corsRes = await fetch(proxyGen(targetWithQuery), { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    if (corsRes.ok) {
+                        const json = await corsRes.json().catch(() => null);
+                        if (json && json.success && json.data) {
+                            return json.data;
+                        }
                     }
+                } catch (corsErr) {
+                    lastError = corsErr;
                 }
-            } catch (getErr) {
-                lastError = getErr;
             }
 
             const errName = lastError && lastError.name;
@@ -737,11 +868,6 @@
             const [adminSearchQuery, setAdminSearchQuery] = useState('');
             const [appliedAdminSearch, setAppliedAdminSearch] = useState('');
             const [hasPerformedAdminSearch, setHasPerformedAdminSearch] = useState(true);
-
-            const handleAdminSearch = () => {
-                setAppliedAdminSearch(adminSearchQuery);
-                setHasPerformedAdminSearch(true);
-            };
 
             // Search State for Modal
             const [searchTerm, setSearchTerm] = useState('');
@@ -1425,24 +1551,16 @@
                     if (data.personnel && data.personnel.length > 0) {
                         const formattedPL = data.personnel.map(p => {
                             const getVal = (obj, keys) => {
-                                const normalizeKey = (k) => String(k || '')
-                                    .trim()
-                                    .toUpperCase()
-                                    .replace(/Ğ/g, 'G')
-                                    .replace(/Ü/g, 'U')
-                                    .replace(/Ş/g, 'S')
-                                    .replace(/İ/g, 'I')
-                                    .replace(/I/g, 'I')
-                                    .replace(/Ö/g, 'O')
-                                    .replace(/Ç/g, 'C')
-                                    .replace(/[^A-Z0-9]/g, '');
-                                const objKeys = Object.keys(obj);
-                                const normalizedObjEntries = objKeys.map(ok => ({ original: ok, normalized: normalizeKey(ok) }));
+                                const objKeys = Object.keys(obj || {});
+                                const normalizedObjEntries = objKeys.map(ok => ({ original: ok, normalized: toCanonicalAscii(ok).replace(/[^A-Z0-9]/g, '') }));
                                 
                                 for (const k of keys) {
-                                    const normalizedTarget = normalizeKey(k);
+                                    const normalizedTarget = toCanonicalAscii(k).replace(/[^A-Z0-9]/g, '');
                                     const match = normalizedObjEntries.find(e => e.normalized === normalizedTarget);
-                                    if (match) return obj[match.original];
+                                    if (match) {
+                                        const val = obj[match.original];
+                                        if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+                                    }
                                 }
                                 return undefined;
                             };
@@ -1472,31 +1590,23 @@
                     if (data.transactions && data.transactions.length > 0) {
                         const formattedTX = data.transactions.map((tx, txIndex) => {
                             const getVal = (obj, keys) => {
-                                const normalizeKey = (k) => String(k || '')
-                                    .trim()
-                                    .toUpperCase()
-                                    .replace(/Ğ/g, 'G')
-                                    .replace(/Ü/g, 'U')
-                                    .replace(/Ş/g, 'S')
-                                    .replace(/İ/g, 'I')
-                                    .replace(/I/g, 'I')
-                                    .replace(/Ö/g, 'O')
-                                    .replace(/Ç/g, 'C')
-                                    .replace(/[^A-Z0-9]/g, '');
-                                const objKeys = Object.keys(obj);
-                                const normalizedObjEntries = objKeys.map(ok => ({ original: ok, normalized: normalizeKey(ok) }));
+                                const objKeys = Object.keys(obj || {});
+                                const normalizedObjEntries = objKeys.map(ok => ({ original: ok, normalized: toCanonicalAscii(ok).replace(/[^A-Z0-9]/g, '') }));
                                 
                                 for (const k of keys) {
-                                    const normalizedTarget = normalizeKey(k);
+                                    const normalizedTarget = toCanonicalAscii(k).replace(/[^A-Z0-9]/g, '');
                                     const match = normalizedObjEntries.find(e => e.normalized === normalizedTarget);
-                                    if (match) return obj[match.original];
+                                    if (match) {
+                                        const val = obj[match.original];
+                                        if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+                                    }
                                 }
                                 return undefined;
                             };
 
-                            let pidClean = cleanPersonnelId(getVal(tx, ['PID', 'PERSON_ID', 'PERSONID', 'PERSONEL_ID', 'PERSONELID', 'ID', 'TC NO', 'KİŞİ ID', 'KISI ID']) || '');
+                            let pidClean = cleanPersonnelId(getVal(tx, ['PID', 'PERSON_ID', 'PERSONID', 'PERSONEL_ID', 'PERSONELID', 'ID', 'TC NO', 'KİŞİ ID', 'KISI ID', 'KISI_ID']) || '');
                             const rawTxId = getVal(tx, ['ID', 'TRANSACTION_ID', 'TX_ID', 'ISLEM_ID', 'SIRA_NO', 'NO']) || ('plansiz_' + (txIndex + 1));
-                            const personNameVal = getVal(tx, ['PERSON_NAME', 'PERSONNAME', 'KISI_ADI', 'KİŞİ_ADI', 'NAME', 'AD_SOYAD', 'ADSOYAD', 'AD_SOYADI', 'PERSONEL', 'PERSONEL_ADI', 'PERSONEL_AD_SOYAD']);
+                            const personNameVal = getVal(tx, ['PERSON_NAME', 'PERSONNAME', 'KISI_ADI', 'KİŞİ_ADI', 'NAME', 'AD_SOYAD', 'ADSOYAD', 'AD_SOYADI', 'PERSONEL', 'PERSONEL_ADI', 'PERSONEL_AD_SOYAD', 'PERSONEL ADI']);
                             const rawDateVal = getVal(tx, ['DATE_L', 'DATE_REF', 'DATE', 'TARİH', 'TARIH', 'TARIHI', 'TARİHİ', 'GUN', 'GÜN', 'ISLEM_TARIHI', 'İŞLEM_TARİHİ']);
                             let txDateVal = normalizeDate(rawDateVal) || formatDateLocal(rawDateVal);
                             if (!txDateVal) {
@@ -1504,7 +1614,7 @@
                                 if (!txDateVal) txDateVal = formatDateLocal(new Date());
                             }
 
-                            // Match person by name or ID
+                            // Match person by name or ID (robust Turkish/English normalization)
                             let finalPid = pidClean;
                             let finalName = personNameVal || '';
                             if (personNameVal) {
@@ -1524,19 +1634,24 @@
                             }
 
                             const txTypeCalculated = (() => {
-                                const t = String(getVal(tx, ['TYPE', 'TIP', 'TİP']) || '').toUpperCase();
-                                if (t.includes('EARN') || t.includes('KAZAN') || t.includes('FMİ') || t.includes('FMI') || t.includes('MESAİ') || t.includes('MESAI')) return TRANSACTION_TYPES.EARNED;
-                                if (t.includes('USE') || t.includes('KULLAN') || t.includes('İZİN') || t.includes('IZIN')) return TRANSACTION_TYPES.USED;
+                                const t = toCanonicalAscii(getVal(tx, ['TYPE', 'TIP', 'TİP']) || '');
+                                if (t.includes('EARN') || t.includes('KAZAN') || t.includes('FMI') || t.includes('MESAI')) return TRANSACTION_TYPES.EARNED;
+                                if (t.includes('USE') || t.includes('KULLAN') || t.includes('IZIN')) return TRANSACTION_TYPES.USED;
                                 return t || TRANSACTION_TYPES.EARNED;
                             })();
 
                             let hoursVal = parseFloat(String(getVal(tx, ['HOURS', 'SAATLER', 'SURE', 'SÜRE', 'SAAT', 'MESAİ_SAATİ', 'MESAISAATI', 'MESAI_SAATI', 'PUAN']) || 0).replace(',', '.'));
                             if (isNaN(hoursVal) || hoursVal <= 0) {
-                                hoursVal = parseFloat(tx.HOURS || tx.hours || tx.displayHours || tx.PUAN || tx.puan || 0);
+                                hoursVal = parseFloat(String(tx.HOURS || tx.hours || tx.displayHours || tx.PUAN || tx.puan || 0).replace(',', '.'));
                             }
 
+                            const rawDayTypeVal = getVal(tx, ['DAY_TYPE', 'DAYTYPE', 'GUN_TIPI', 'GÜN_TİPİ', 'GUN TIPI', 'GÜN TİPİ']);
+                            const normalizedDayType = normalizeDayType(rawDayTypeVal, txDateVal);
+                            const rawShiftVal = getVal(tx, ['SHIFT', 'VARDIYA', 'VARDİYA', 'GECE_GUNDUZ', 'GECE_GÜNDÜZ', 'CALISMA_SEKLI']);
+                            const normalizedShift = normalizeShift(rawShiftVal);
+
                             const isPlansizExplicit = tx.isPlansiz === true || tx.IS_PLANSIZ === true;
-                            const isPlansiz = isPlansizExplicit || txTypeCalculated === TRANSACTION_TYPES.EARNED || String(rawTxId || '').startsWith('manual-tx') || String(rawTxId || '').startsWith('sheet_tx') || String(rawTxId || '').startsWith('plansiz');
+                            const isPlansiz = isPlansizExplicit || isPlansizTransaction(tx) || txTypeCalculated === TRANSACTION_TYPES.EARNED || String(rawTxId || '').startsWith('manual-tx') || String(rawTxId || '').startsWith('sheet_tx') || String(rawTxId || '').startsWith('plansiz');
 
                             // Unified mapping for all transaction columns
                             return {
@@ -1552,15 +1667,15 @@
                                 days: parseInt(String(getVal(tx, ['DAYS', 'GUNLER', 'GUN', 'GÜN']) || 1)),
                                 description: getVal(tx, ['DESCRIPTION', 'ACIKLAMA', 'AÇIKLAMA', 'ACIKLAMALAR', 'AÇIKLAMALAR', 'GOREV', 'GÖREV', 'ISLEM', 'İŞLEM']) || 'PLANSIZ MESAİ',
                                 note: getVal(tx, ['NOTE', 'NOT', 'NOTLAR', 'NOTES', 'BILGI', 'BİLGİ']),
-                                shift: getVal(tx, ['SHIFT', 'VARDIYA', 'VARDİYA', 'GECE_GUNDUZ', 'GECE_GÜNDÜZ']),
-                                dayType: getVal(tx, ['DAY_TYPE', 'DAYTYPE', 'GUN_TIPI', 'GÜN_TİPİ']),
+                                shift: normalizedShift,
+                                dayType: normalizedDayType,
                                 type: txTypeCalculated,
                                 isPlansiz: isPlansiz,
                                 status: (() => {
-                                    const s = String(getVal(tx, ['STATUS', 'DURUM']) || '').toUpperCase();
-                                    if (s === 'APPROVED' || s === 'ONAYLANDI' || s === 'ONAYLI' || s === 'MODIFIED') return 'APPROVED';
-                                    if (s === 'REJECTED' || s === 'REDDEDİLDİ' || s === 'RETTEDİLDİ') return 'REJECTED';
-                                    if (s === 'PENDING' || s === 'BEKLEMEDE') return 'PENDING';
+                                    const s = toCanonicalAscii(getVal(tx, ['STATUS', 'DURUM']) || '');
+                                    if (s === 'APPROVED' || s.includes('ONAY') || s === 'MODIFIED') return 'APPROVED';
+                                    if (s === 'REJECTED' || s.includes('RED') || s.includes('RET')) return 'REJECTED';
+                                    if (s === 'PENDING' || s.includes('BEKLE')) return 'PENDING';
                                     return s || 'APPROVED';
                                 })(),
                                 createdAt: getVal(tx, ['CREATED_AT', 'CREATEDAT', 'OLUSTURMA_TARIHI', 'TIMESTAMP'])
@@ -1752,6 +1867,13 @@
                 }
             };
 
+            const handleAdminSearch = async () => {
+                setAppliedAdminSearch(adminSearchQuery);
+                setHasPerformedAdminSearch(true);
+                // Her basımda canlı verileri e-tablodan çek ve güncelle
+                await refreshData(false);
+            };
+
             // Load Initial Data (Fetch fresh live data)
             useEffect(() => {
                 const init = () => {
@@ -1759,9 +1881,8 @@
                     localStorage.removeItem('ogm_admin_role');
                     setAdminRole(null);
                     
-                    // Verileri canlı olarak çek (önbellek varsa arkada tazele)
-                    const hasCached = (personnel && personnel.length > 0) || (transactions && transactions.length > 0);
-                    refreshData(hasCached);
+                    // Site ilk açıldığında otomatik olarak verileri çek ve tablolara yaz
+                    refreshData(false);
                 };
                 init();
             }, []);
@@ -1927,11 +2048,12 @@
                 const plansizOnDaySet = new Set();
                 allTxs.forEach(oTx => {
                     const oId = String(oTx.id || oTx.ID || '').toLowerCase();
-                    const oDesc = String(oTx.description || oTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                    const oDesc = toCanonicalAscii(oTx.description || oTx.DESCRIPTION || '');
                     const oType = oTx.type || oTx.TYPE || '';
-                    const oIsPlansiz = oTx.isPlansiz === true || oTx.IS_PLANSIZ === true || oId.startsWith('manual-tx') || oId.startsWith('manual-override') || oId.startsWith('plansiz') || oId.startsWith('sheet_tx') || oDesc.includes('PLANSIZ') || (!oId.startsWith('auto-') && !oId.includes('sync') && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED'));
+                    const oIsAuto = oId.startsWith('auto') || oId.includes('auto') || oId.includes('sync') || oTx.isAuto || oTx.isStandbySync || oTx.isGorevSync || oTx.isFmi;
+                    const oIsPlansiz = isPlansizTransaction(oTx);
                     const oIsStandby = oId.includes('standby') || oDesc.includes('BEKLEME');
-                    const oIsFmi = oDesc.includes('FMİ') || oDesc.includes('FMI') || oDesc.includes('F.M.İ');
+                    const oIsFmi = oDesc.includes('FMI');
                     const key = `${cleanPersonnelId(oTx.personId)}_${formatDateLocal(oTx.date)}`;
                     if (oIsPlansiz) {
                         plansizOnDaySet.add(key);
@@ -1943,10 +2065,10 @@
 
                 const attendanceStandbySet = new Set();
                 attendanceRecords.forEach(r => {
-                    const st = String(r.status || '').toLocaleUpperCase('tr-TR');
-                    const nt = String(r.note || '').toLocaleUpperCase('tr-TR');
-                    const lc = String(r.location || r.DUTY_LOC || '').toLocaleUpperCase('tr-TR');
-                    const isEx = st.includes('İZİN') || st.includes('IZIN') || st.includes('RAPOR') || st.includes('İSTİRAHAT') || st.includes('HASTANE') || st.includes('KURS');
+                    const st = toCanonicalAscii(r.status || '');
+                    const nt = toCanonicalAscii(r.note || '');
+                    const lc = toCanonicalAscii(r.location || r.DUTY_LOC || '');
+                    const isEx = st.includes('IZIN') || st.includes('RAPOR') || st.includes('ISTIRAHAT') || st.includes('HASTANE') || st.includes('KURS');
                     if ((st.includes('BEKLEME') || nt.includes('BEKLEME') || lc.includes('BEKLEME')) && !isEx) {
                         attendanceStandbySet.add(`${cleanPersonnelId(r.personId)}_${formatDateLocal(r.date)}`);
                     }
@@ -1958,7 +2080,7 @@
                     const bId = String(b.id || '').toLowerCase();
                     const getPriority = (id) => {
                         if (id.startsWith('manual-override')) return 0;
-                        if (id.startsWith('auto-') || id.includes('sync')) return 2;
+                        if (id.startsWith('auto') || id.includes('sync')) return 2;
                         return 1;
                     };
                     return getPriority(aId) - getPriority(bId);
@@ -1966,10 +2088,10 @@
 
                 return sorted.filter(tx => {
                     const id = String(tx.id || tx.ID || '').toLowerCase();
-                    const isAuto = id.startsWith('auto-') || id.includes('auto-') || id.includes('sync');
-                    const desc = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                    const isAuto = id.startsWith('auto') || id.includes('auto') || id.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                    const desc = toCanonicalAscii(tx.description || tx.DESCRIPTION || '');
                     const txType = tx.type || tx.TYPE || '';
-                    const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || id.startsWith('manual-tx') || id.startsWith('manual-override') || id.startsWith('plansiz') || id.startsWith('sheet_tx') || desc.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
+                    const isPlansiz = isPlansizTransaction(tx);
                     if (isPlansiz) return true; // Plansız mesailer her zaman korunur
 
                     const dateLocal = formatDateLocal(tx.date || tx.DATE);
@@ -1979,6 +2101,7 @@
 
                     const hasAutoFmi = autoFmiSet.has(`${pid}_${dateLocal}`);
                     const isTxPlannedDuty = id.includes('auto_duty') || 
+                        id.includes('auto-duty') ||
                         desc.includes('OTOMATİK GÖREV') || 
                         desc.includes('PLANLI GÖREV') || 
                         desc.includes('GÖREV MESAİSİ');
@@ -1992,7 +2115,7 @@
                     
                     const isHolidayStandby = !isPlansiz && (tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
                     const isStandby = !isPlansiz && (tx.isStandby !== undefined ? tx.isStandby : (hasBeklemeInText && !isHolidayStandby));
-                    const isPlannedDuty = !isPlansiz && !hasBeklemeInText && !desc.includes('PLANSIZ') && !desc.includes('MESAİ') && !desc.includes('MESAI') && (id.includes('auto_duty') || desc.includes('OTOMATİK GÖREV') || desc.includes('PLANLI GÖREV') || desc.includes('PLANLI GOREV') || tx.isPlanned === true);
+                    const isPlannedDuty = !isPlansiz && !hasBeklemeInText && !desc.includes('PLANSIZ') && !desc.includes('MESAİ') && !desc.includes('MESAI') && (id.includes('auto_duty') || id.includes('auto-duty') || desc.includes('OTOMATİK GÖREV') || desc.includes('PLANLI GÖREV') || desc.includes('PLANLI GOREV') || tx.isPlanned === true);
                     const isFmiUsage = !isPlansiz && (tx.type === TRANSACTION_TYPES.USED || desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ'));
 
                     const personObj = getPerson(pid);
@@ -2009,11 +2132,13 @@
 
                     let skipStandby = false;
                     if (isHolidayStandby) {
-                        if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
-                        if (isTechPerson && hasPlansizOnThisDay) skipStandby = true;
+                        // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
+                        if (hasPlansizOnThisDay) skipStandby = true;
+                        else if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
                     } else if (isStandby) {
                         // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
-                        if (isTechPerson && (hasPlansizOnThisDay || hasDutyOnThisDay)) skipStandby = true;
+                        if (hasPlansizOnThisDay) skipStandby = true;
+                        else if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
                     }
                     if (isAuto && (isStandby || isHolidayStandby) && skipStandby) return false;
 
@@ -2163,7 +2288,7 @@
                 const plansizDaysSet = new Set();
                 filteredTransactions.forEach(oTx => {
                     const oId = String(oTx.id || oTx.ID || '').toLowerCase();
-                    const oIsAuto = oId.startsWith('auto-') || oId.includes('sync');
+                    const oIsAuto = oId.startsWith('auto') || oId.includes('auto') || oId.includes('sync') || oTx.isAuto || oTx.isStandbySync || oTx.isGorevSync || oTx.isFmi;
                     const oDesc = String(oTx.description || oTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                     const oType = oTx.type || oTx.TYPE || '';
                     const oIsPlansiz = oTx.isPlansiz === true || oTx.IS_PLANSIZ === true || oId.startsWith('manual-tx') || oId.startsWith('manual-override') || oDesc.includes('PLANSIZ') || (!oIsAuto && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED'));
@@ -2399,7 +2524,9 @@
                                 const isTechPerson = checkIsTechnical(personObj);
 
                                 if (isHolidayStandby) {
-                                    if (isAuto && isTechPerson && hasPlansizOnThisDay) skip = true;
+                                    // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
+                                    if (isAuto && hasPlansizOnThisDay) skip = true;
+                                    else if (isAuto && hasDutyOnThisDay && !isDriverOnly) skip = true;
                                     else if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
@@ -2410,8 +2537,8 @@
                                         }
                                     }
                                 } else if (isStandby) {
-                                    // OGM1 (Teknik ekip): Plansız mesai girilmişse o güne otomatik bekleme 1 saat ya da 2 saat yazılmaz!
-                                    if (isAuto && isTechPerson && (hasPlansizOnThisDay || hasDutyOnThisDay)) skip = true;
+                                    // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
+                                    if (isAuto && (hasPlansizOnThisDay || (hasDutyOnThisDay && !isDriverOnly))) skip = true;
                                     else if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
@@ -4542,10 +4669,11 @@
                                             <button 
                                                 type="button"
                                                 onClick={handleAdminSearch}
-                                                className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white px-6 py-2.5 rounded-xl text-xs font-black tracking-wider uppercase flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50 transition-all border border-emerald-400/30 cursor-pointer whitespace-nowrap"
+                                                disabled={isRefreshing || loading}
+                                                className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 disabled:opacity-75 disabled:pointer-events-none text-white px-6 py-2.5 rounded-xl text-xs font-black tracking-wider uppercase flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50 transition-all border border-emerald-400/30 cursor-pointer whitespace-nowrap"
                                             >
-                                                <Icon name="Search" size={15} />
-                                                <span>VERİLERİ GÖR / ARA</span>
+                                                <Icon name={isRefreshing || loading ? "RotateCcw" : "Search"} size={15} className={isRefreshing || loading ? "animate-spin" : ""} />
+                                                <span>{isRefreshing || loading ? "GÜNCELLENİYOR..." : "VERİLERİ GÖR / ARA"}</span>
                                             </button>
                                         </div>
 

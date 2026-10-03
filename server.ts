@@ -3,9 +3,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 
 async function startServer() {
-  const PORT = process.env.PORT || 3000;
-
   const app = express();
+  const PORT = 3000;
 
   // Body parsers for JSON and URL-encoded data
   app.use(express.json({ limit: "50mb" }));
@@ -43,27 +42,30 @@ async function startServer() {
     const cacheKey = `${targetUrl}_${action || 'get_init_data'}`;
 
     try {
-      const requestBody = JSON.stringify({ action, ...payload });
+      let response: any;
+      const isGet = (action === "get_init_data" || !action);
 
-      let response = await fetch(targetUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain;charset=utf-8"
-        },
-        body: requestBody,
-        redirect: "manual",
-        signal: AbortSignal.timeout(60000)
-      });
-
-      // Follow Google Apps Script 302 redirect via GET to get final response
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (location) {
-          response = await fetch(location, {
-            method: "GET",
-            signal: AbortSignal.timeout(60000)
-          });
-        }
+      if (isGet) {
+        const getUrl = targetUrl + (targetUrl.includes("?") ? "&" : "?") + `action=${encodeURIComponent(action || "get_init_data")}&_t=${Date.now()}`;
+        response = await fetch(getUrl, {
+          method: "GET",
+          headers: {
+            "Accept": "application/json"
+          },
+          redirect: "follow",
+          signal: AbortSignal.timeout(60000)
+        });
+      } else {
+        const requestBody = JSON.stringify({ action, ...payload });
+        response = await fetch(targetUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain;charset=utf-8"
+          },
+          body: requestBody,
+          redirect: "follow",
+          signal: AbortSignal.timeout(60000)
+        });
       }
 
       const text = await response.text();
@@ -127,8 +129,11 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    app.use((req, res, next) => {
+      if (req.method === "GET" && !req.path.startsWith("/api")) {
+        return res.sendFile(path.join(distPath, "index.html"));
+      }
+      next();
     });
   }
 
