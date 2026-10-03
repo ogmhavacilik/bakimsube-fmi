@@ -200,12 +200,9 @@
         const toCanonicalAscii = (str) => {
             if (str === null || str === undefined) return '';
             return String(str)
-                .normalize('NFD')
-                .replace(/[\u0300-\u036f]/g, '')
                 .replace(/İ/g, 'I')
                 .replace(/ı/g, 'I')
                 .replace(/i/g, 'I')
-                .replace(/I/g, 'I')
                 .replace(/ğ/g, 'G')
                 .replace(/Ğ/g, 'G')
                 .replace(/ü/g, 'U')
@@ -216,6 +213,8 @@
                 .replace(/Ö/g, 'O')
                 .replace(/ç/g, 'C')
                 .replace(/Ç/g, 'C')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
                 .toUpperCase()
                 .trim();
         };
@@ -280,9 +279,9 @@
         const isPlansizTransaction = (tx) => {
             if (!tx) return false;
             if (tx.isPlansiz === true || tx.IS_PLANSIZ === true) return true;
-            const id = String(tx.id || tx.ID || tx.TRANSACTION_ID || tx.ISLEM_ID || '').toLowerCase();
+            const id = String(tx.id || tx.ID || tx.TRANSACTION_ID || tx.ISLEM_ID || tx.rawTxId || '').toLowerCase();
             if (id.startsWith('plansiz') || id.startsWith('manual-tx') || id.startsWith('manual-override') || id.startsWith('sheet_tx')) return true;
-            const desc = toCanonicalAscii(tx.description || tx.DESCRIPTION || tx.aciklama || tx.ACIKLAMA || tx.gorev || tx.GOREV || '');
+            const desc = toCanonicalAscii(tx.description || tx.DESCRIPTION || tx.aciklama || tx.ACIKLAMA || tx.gorev || tx.GOREV || tx.islem || tx.ISLEM || '');
             if (desc.includes('PLANSIZ')) return true;
             const note = toCanonicalAscii(tx.note || tx.NOTE || tx.not || tx.NOT || '');
             if (note.includes('PLANSIZ')) return true;
@@ -656,6 +655,18 @@
                 } catch (corsErr) {
                     lastError = corsErr;
                 }
+            }
+
+            if (action === 'get_init_data') {
+                try {
+                    const staticRes = await fetch('/cached_init_data.json').catch(() => null);
+                    if (staticRes && staticRes.ok) {
+                        const staticJson = await staticRes.json().catch(() => null);
+                        if (staticJson && staticJson.data) {
+                            return staticJson.data;
+                        }
+                    }
+                } catch (e) {}
             }
 
             const errName = lastError && lastError.name;
@@ -1519,9 +1530,24 @@
                         if (arr1.length > 0 && arr2.length === 0) return arr1;
                         if (arr2.length > 0 && arr1.length === 0) return arr2;
                         if (arr1.length === 0 && arr2.length === 0) return [];
+                        if (list1 === list2) return arr1;
+
                         const m = new Map();
                         [...arr1, ...arr2].forEach((item, idx) => {
-                            const k = item.ID || item.id || `${item.PERSONID || item.PERSON_ID || item.personId}_${item.DATE || item.date}_${item.HOURS || item.hours}_${idx}`;
+                            const isPlansiz = item.isPlansiz === true || item.IS_PLANSIZ === true || isPlansizTransaction(item);
+                            let k;
+                            if (isPlansiz) {
+                                const rowIdx = item.ROW_INDEX !== undefined ? item.ROW_INDEX : '';
+                                const pid = cleanPersonnelId(item.PersonId || item.PersonID || item.PERSONID || item.personId || item.PID || '');
+                                const dt = item.Date || item.DATE || item.date || '';
+                                const hrs = item.Hours || item.HOURS || item.hours || '';
+                                const desc = item.Description || item.DESCRIPTION || item.aciklama || item.ACIKLAMA || '';
+                                const ts = item.Timestamp || item.TIMESTAMP || item.CreatedAt || '';
+                                const id = item.ID || item.id || '';
+                                k = `plansiz_${id}_${pid}_${dt}_${hrs}_${desc}_${ts}_row${rowIdx}`;
+                            } else {
+                                k = item.ID || item.id || `${cleanPersonnelId(item.PERSONID || item.PERSON_ID || item.personId)}_${item.DATE || item.date}_${item.HOURS || item.hours}`;
+                            }
                             if (!m.has(k)) m.set(k, item);
                         });
                         return Array.from(m.values());
@@ -1656,7 +1682,10 @@
                             // Unified mapping for all transaction columns
                             return {
                                 ...tx,
-                                id: rawTxId || `plansiz-tx-${finalPid || 'pid'}-${txIndex}-${Math.random().toString(36).substring(2, 7)}`,
+                                id: isPlansiz 
+                                    ? (rawTxId ? `${rawTxId}_row${tx.ROW_INDEX !== undefined ? tx.ROW_INDEX : txIndex}_idx${txIndex}` : `plansiz-tx-${finalPid || 'pid'}-${txIndex}`)
+                                    : (rawTxId || `auto-tx-${finalPid || 'pid'}-${txIndex}`),
+                                rawTxId: rawTxId || '',
                                 personId: finalPid || pidClean,
                                 personName: finalName || personNameVal,
                                 date: txDateVal,
@@ -1665,8 +1694,8 @@
                                 endTime: getVal(tx, ['END_TIME', 'ENDTIME', 'BITIS_SAATI', 'B_SAATI']),
                                 hours: hoursVal,
                                 days: parseInt(String(getVal(tx, ['DAYS', 'GUNLER', 'GUN', 'GÜN']) || 1)),
-                                description: getVal(tx, ['DESCRIPTION', 'ACIKLAMA', 'AÇIKLAMA', 'ACIKLAMALAR', 'AÇIKLAMALAR', 'GOREV', 'GÖREV', 'ISLEM', 'İŞLEM']) || 'PLANSIZ MESAİ',
-                                note: getVal(tx, ['NOTE', 'NOT', 'NOTLAR', 'NOTES', 'BILGI', 'BİLGİ']),
+                                description: getVal(tx, ['DESCRIPTION', 'ACIKLAMA', 'AÇIKLAMA', 'ACIKLAMALAR', 'AÇIKLAMALAR', 'ACIKLAMASI', 'AÇIKLAMASI', 'GOREV', 'GÖREV', 'GOREVI', 'GÖREVİ', 'ISLEM', 'İŞLEM', 'ISLEM_ACIKLAMASI', 'İŞLEM_AÇIKLAMASI', 'MESAI_ACIKLAMASI', 'MESAİ_AÇIKLAMASI', 'MESAİ', 'MESAI']) || tx.description || tx.DESCRIPTION || tx.aciklama || tx.Açıklama || 'PLANSIZ MESAİ',
+                                note: getVal(tx, ['NOTE', 'NOT', 'NOTLAR', 'NOTES', 'BILGI', 'BİLGİ', 'NOTU', 'NOTI']) || tx.note || tx.NOTE || '',
                                 shift: normalizedShift,
                                 dayType: normalizedDayType,
                                 type: txTypeCalculated,
@@ -1854,7 +1883,7 @@
                         setLoadingStepText("4/5: Tüm mesai türleri doğrulandı (Plansız Mesai, Görev, Bekleme)...");
                         setVerifiedCategories({ plansiz: true, gorev: true, bekleme: true, fmi: true });
                         setLoadingProgress(100);
-                        setLoadingStepText("5/5: Hesaplamalar ve veri tabloları güncellendi! (%100)");
+                        setHasPerformedAdminSearch(true);
                     }
                 } catch (e) {
                     console.warn("Refresh warning:", e);
@@ -1876,12 +1905,34 @@
 
             // Load Initial Data (Fetch fresh live data)
             useEffect(() => {
-                const init = () => {
+                const init = async () => {
                     // Always reset admin role on refresh so re-login is required
                     localStorage.removeItem('ogm_admin_role');
                     setAdminRole(null);
                     
-                    // Site ilk açıldığında otomatik olarak verileri çek ve tablolara yaz
+                    // 1. Instantly load local/static data on initial open so table is populated immediately
+                    try {
+                        const localPL = localStorage.getItem('ogm_personnel');
+                        const localTX = localStorage.getItem('ogm_overtime_tx');
+                        if (localPL && localTX) {
+                            setPersonnel(JSON.parse(localPL));
+                            setTransactions(JSON.parse(localTX));
+                        } else {
+                            const res = await fetch('/cached_init_data.json').catch(() => null);
+                            if (res && res.ok) {
+                                const json = await res.json().catch(() => null);
+                                if (json && json.data) {
+                                    if (json.data.personnel) setPersonnel(json.data.personnel);
+                                    if (json.data.transactions) setTransactions(json.data.transactions);
+                                    if (json.data.attendance) setAttendanceRecords(json.data.attendance);
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn("İlk yükleme önbellek okuma hatası:", e);
+                    }
+
+                    // 2. Automatically pull fresh live data from Google Sheet on load
                     refreshData(false);
                 };
                 init();
@@ -2429,11 +2480,12 @@
                     if (map[pid]) {
                         const txId = String(tx.id || tx.ID || '');
                         const isAuto = txId.startsWith('auto-') || txId.includes('sync');
-                        const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                        const descCanon = toCanonicalAscii(tx.description || tx.DESCRIPTION || tx.aciklama || tx.ACIKLAMA || tx.gorev || tx.GOREV || '');
+                        const descUpper = descCanon;
                         const txLoc = String(tx.location || tx.DUTY_LOC || tx.LOCATION || '').toLocaleUpperCase('tr-TR');
                         const txNote = String(tx.note || tx.NOTE || '').toLocaleUpperCase('tr-TR');
                         const txType = tx.type || tx.TYPE || '';
-                        const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.toLowerCase().startsWith('manual-tx') || txId.toLowerCase().startsWith('manual-override') || txId.toLowerCase().startsWith('plansiz') || txId.toLowerCase().startsWith('sheet_tx') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
+                        const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || isPlansizTransaction(tx) || txId.toLowerCase().startsWith('manual-tx') || txId.toLowerCase().startsWith('manual-override') || txId.toLowerCase().startsWith('plansiz') || txId.toLowerCase().startsWith('sheet_tx') || descCanon.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
 
                         const dateStr = formatDateLocal(tx.date || tx.DATE);
                         if (!isPlansiz && (!dateStr || !dateStr.startsWith('2026'))) return;
@@ -2441,7 +2493,7 @@
                         const status = String(tx.status || tx.STATUS || '').toUpperCase();
                         if (status === 'REJECTED' || status === 'REDDEDİLDİ' || status === 'RETTEDİLDİ') return;
 
-                        const dayType = getDayType(dateStr) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || tx.DAYTYPE || getDayType(dateStr));
+                        const dayType = normalizeDayType(tx.dayType || tx.DAYTYPE, dateStr);
                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                         
                         if (!isPlansiz && (isOverseas(txLoc) || isOverseas(descUpper) || isOverseas(txNote))) return;
@@ -3216,9 +3268,9 @@
                         const isSerkan = name.includes('SERKAN KOTAN') || name.includes('SERKAN KÖTEN');
                         const isTech = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => title.includes(t)) && !isSerkan;
 
-                        const wkdayData = b[DAY_TYPES.WEEKDAY] || { day: 0, night: 0 };
-                        const wkendData = b[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
-                        const holidData = b[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
+                        const wkdayData = getBreakdownData(b, DAY_TYPES.WEEKDAY);
+                        const wkendData = getBreakdownData(b, DAY_TYPES.WEEKEND);
+                        const holidData = getBreakdownData(b, DAY_TYPES.HOLIDAY);
 
                         const pWkday = (wkdayData.day + wkdayData.night);
                         const pWkend = (wkendData.day + wkendData.night);
@@ -3847,9 +3899,9 @@
                     const isSerkan = name.includes('SERKAN KOTAN') || name.includes('SERKAN KÖTEN');
                     const isTech = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => title.includes(t)) && !isSerkan;
                     
-                    const wkdayData = b[DAY_TYPES.WEEKDAY] || { day: 0, night: 0 };
-                    const wkendData = b[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
-                    const holidData = b[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
+                    const wkdayData = getBreakdownData(b, DAY_TYPES.WEEKDAY);
+                    const wkendData = getBreakdownData(b, DAY_TYPES.WEEKEND);
+                    const holidData = getBreakdownData(b, DAY_TYPES.HOLIDAY);
                     
                     const pWkday = (wkdayData.day + wkdayData.night);
                     const pWkend = (wkendData.day + wkendData.night);
@@ -4650,7 +4702,7 @@
                                                 <input 
                                                     type="text"
                                                     value={adminSearchQuery}
-                                                    onChange={(e) => setAdminSearchQuery(e.target.value)}
+                                                    onChange={(e) => { setAdminSearchQuery(e.target.value); setAppliedAdminSearch(e.target.value); setHasPerformedAdminSearch(true); }}
                                                     onKeyDown={(e) => { if (e.key === 'Enter') handleAdminSearch(); }}
                                                     placeholder="Personel adı, soyadı veya unvanı ile ara..."
                                                     className="w-full bg-forest-950/90 border border-forest-700/80 text-white text-xs rounded-xl pl-10 pr-10 py-2.5 focus:outline-none focus:border-emerald-500 font-bold transition-all placeholder:text-forest-500"
@@ -4658,7 +4710,7 @@
                                                 {adminSearchQuery && (
                                                     <button 
                                                         type="button" 
-                                                        onClick={() => { setAdminSearchQuery(''); setAppliedAdminSearch(''); setHasPerformedAdminSearch(false); }}
+                                                        onClick={() => { setAdminSearchQuery(''); setAppliedAdminSearch(''); setHasPerformedAdminSearch(true); }}
                                                         className="absolute right-3 top-1/2 -translate-y-1/2 text-forest-400 hover:text-white p-1"
                                                     >
                                                         <Icon name="X" size={14} />
@@ -4769,9 +4821,9 @@
                                                         const isSerkan = name.includes('SERKAN KOTAN') || name.includes('SERKAN KÖTEN');
                                                         const isTech = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => title.includes(t)) && !isSerkan;
                                                         
-                                                        const wkdayData = b[DAY_TYPES.WEEKDAY] || { day: 0, night: 0 };
-                                                        const wkendData = b[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
-                                                        const holidData = b[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
+                                                        const wkdayData = getBreakdownData(b, DAY_TYPES.WEEKDAY);
+                                                        const wkendData = getBreakdownData(b, DAY_TYPES.WEEKEND);
+                                                        const holidData = getBreakdownData(b, DAY_TYPES.HOLIDAY);
                                                         
                                                         const pWkday = (wkdayData.day + wkdayData.night);
                                                         const pWkend = (wkendData.day + wkendData.night);
@@ -5281,7 +5333,7 @@
                                      const seen = new Map();
                                      rawItems.forEach((item, itemIdx) => {
                                          const d = normalizeDateSimple(item.date || item.DATE);
-                                         const descUpper = String(item.description || item.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                                         const descUpper = toCanonicalAscii(item.description || item.DESCRIPTION || item.aciklama || item.ACIKLAMA || item.gorev || item.GOREV || '');
                                          const txId = String(item.id || item.ID || '').toLowerCase();
                                          const dayType = getDayType(d) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (item.dayType || item.DAYTYPE || getDayType(d));
                                          const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
@@ -5290,7 +5342,7 @@
                                          
                                           const isManualOverride = txId.startsWith('manual-override');
                                           const isAuto = txId.startsWith('auto-') || txId.includes('sync') || item.isFmi || item.isGorevSync || item.isStandbySync;
-                                         const isPlansiz = item.isPlansiz === true || item.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (itemType === TRANSACTION_TYPES.EARNED || itemType === 'EARNED'));
+                                         const isPlansiz = item.isPlansiz === true || item.IS_PLANSIZ === true || isPlansizTransaction(item) || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || txId.startsWith('sheet_tx') || txId.startsWith('plansiz') || descUpper.includes('PLANSIZ') || (!isAuto && (itemType === TRANSACTION_TYPES.EARNED || itemType === 'EARNED'));
                                          const hasBeklemeInText = !isPlansiz && (item.isStandbySync === true || item.isStandby === true || item.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                                          const isExplicitHolidayStandby = !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby'));
                                          const isHolidayStandby = !isPlansiz && (item.isHolidayStandby !== undefined ? item.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
@@ -5360,9 +5412,9 @@
 
                                     // Recalculate Plansiz totals from all items to ensure absolute accuracy with manual sheet
                                     const plansizItems = allItems.filter(tx => tx.isPlansiz);
-                                    const pWkday_modal = plansizItems.filter(tx => getDayType(tx.date) === DAY_TYPES.WEEKDAY).reduce((s, tx) => s + (parseFloat(tx.hours) || 0), 0);
-                                    const pWkend_modal = plansizItems.filter(tx => getDayType(tx.date) === DAY_TYPES.WEEKEND).reduce((s, tx) => s + (parseFloat(tx.hours) || 0), 0);
-                                    const pHolid_modal = plansizItems.filter(tx => getDayType(tx.date) === DAY_TYPES.HOLIDAY).reduce((s, tx) => s + (parseFloat(tx.hours) || 0), 0);
+                                    const pWkday_modal = plansizItems.filter(tx => normalizeDayType(tx.dayType, tx.date) === DAY_TYPES.WEEKDAY).reduce((s, tx) => s + (parseFloat(tx.hours) || 0), 0);
+                                    const pWkend_modal = plansizItems.filter(tx => normalizeDayType(tx.dayType, tx.date) === DAY_TYPES.WEEKEND).reduce((s, tx) => s + (parseFloat(tx.hours) || 0), 0);
+                                    const pHolid_modal = plansizItems.filter(tx => normalizeDayType(tx.dayType, tx.date) === DAY_TYPES.HOLIDAY).reduce((s, tx) => s + (parseFloat(tx.hours) || 0), 0);
                                     const totalPlansizPuan_modal = pWkday_modal + pWkend_modal + pHolid_modal;
 
                                     // Use globally calculated stats to ensure detailed breakdown matches the summary table EXACTLY.
@@ -5394,9 +5446,9 @@
                                     const isTech = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => pTitle.includes(t)) && !isSerkan;
                                     const isDriverPerson = checkIsDriver(selectedPerson);
 
-                                    const wkdayData = targetStats.breakdown?.[DAY_TYPES.WEEKDAY] || { day: 0, night: 0 };
-                                    const wkendData = targetStats.breakdown?.[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
-                                    const holidData = targetStats.breakdown?.[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
+                                    const wkdayData = getBreakdownData(targetStats.breakdown, DAY_TYPES.WEEKDAY);
+                                    const wkendData = getBreakdownData(targetStats.breakdown, DAY_TYPES.WEEKEND);
+                                    const holidData = getBreakdownData(targetStats.breakdown, DAY_TYPES.HOLIDAY);
                                     
                                     const pWkday = (wkdayData.day + wkdayData.night);
                                     const pWkend = (wkendData.day + wkendData.night);
@@ -5776,7 +5828,7 @@
                                             <div className="max-h-48 overflow-y-auto bg-forest-950/50 rounded-xl p-1 space-y-1 mb-1 border border-forest-800/30">
                                                 {displayPersonnel
                                                     .filter(p => isPersonnelInGroup(p, adminRole))
-                                                    .filter(p => (p.fullName || '').toLocaleUpperCase('tr-TR').includes((searchTerm || '').toLocaleUpperCase('tr-TR')))
+                                                    .filter(p => toCanonicalAscii(p.fullName || '').includes(toCanonicalAscii(searchTerm || '')))
                                                     .slice(0, 10)
                                                     .map(p => (
                                                         <button
