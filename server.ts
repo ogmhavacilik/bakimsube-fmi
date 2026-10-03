@@ -3,8 +3,9 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 
 async function startServer() {
+  const PORT = process.env.PORT || 3000;
+
   const app = express();
-  const PORT = 3000;
 
   // Body parsers for JSON and URL-encoded data
   app.use(express.json({ limit: "50mb" }));
@@ -126,7 +127,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*all", (req, res) => {
+    app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

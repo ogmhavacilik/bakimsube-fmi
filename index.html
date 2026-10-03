@@ -1890,7 +1890,8 @@
 
                     // 3. Görev (Duty)
                     const isDuty = normStatus.includes('GÖREV') || normStatus.includes('GOREV');
-                    const isPlanned = record.isPlanned === true || normStatus.includes('PLANLI') || note.includes('PLANLI') || loc.includes('PLANLI') || String(record.isPlanned || '').toLocaleUpperCase('tr-TR').includes('PLANLI');
+                    // In attendance, any GÖREV is automatically treated as planlı görev as requested
+                    const isPlanned = true;
                     const isOverseasDuty = isOverseas(loc) || isOverseas(note) || isOverseas(normStatus);
                     if (isDuty && isPlanned && !isOverseasDuty) {
                         const datePart = formatDateLocal(dateStr);
@@ -1898,7 +1899,7 @@
                         const dt = new Date(y, m - 1, d);
                         const isStrictWeekend = dt.getDay() === 0 || dt.getDay() === 6;
                         attendanceVirtual.push({
-                            id: `auto-duty-${pid}-${dateStr}`,
+                            id: `auto_duty-${pid}-${dateStr}`,
                             personId: pid,
                             personName: p?.fullName || pid,
                             date: dateStr,
@@ -1923,13 +1924,20 @@
                 });
 
                 const dutyOnDaySet = new Set();
+                const plansizOnDaySet = new Set();
                 allTxs.forEach(oTx => {
                     const oId = String(oTx.id || oTx.ID || '').toLowerCase();
                     const oDesc = String(oTx.description || oTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                    const oType = oTx.type || oTx.TYPE || '';
+                    const oIsPlansiz = oTx.isPlansiz === true || oTx.IS_PLANSIZ === true || oId.startsWith('manual-tx') || oId.startsWith('manual-override') || oId.startsWith('plansiz') || oId.startsWith('sheet_tx') || oDesc.includes('PLANSIZ') || (!oId.startsWith('auto-') && !oId.includes('sync') && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED'));
                     const oIsStandby = oId.includes('standby') || oDesc.includes('BEKLEME');
                     const oIsFmi = oDesc.includes('FMİ') || oDesc.includes('FMI') || oDesc.includes('F.M.İ');
+                    const key = `${cleanPersonnelId(oTx.personId)}_${formatDateLocal(oTx.date)}`;
+                    if (oIsPlansiz) {
+                        plansizOnDaySet.add(key);
+                    }
                     if (!oIsStandby && !oIsFmi) {
-                        dutyOnDaySet.add(`${cleanPersonnelId(oTx.personId)}_${formatDateLocal(oTx.date)}`);
+                        dutyOnDaySet.add(key);
                     }
                 });
 
@@ -1997,11 +2005,15 @@
                     const isTechPerson = checkIsTechnical(personObj);
                     const isWk = checkIsWeekend(dateLocal);
 
+                    const hasPlansizOnThisDay = plansizOnDaySet.has(`${pid}_${dateLocal}`);
+
                     let skipStandby = false;
                     if (isHolidayStandby) {
                         if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
+                        if (isTechPerson && hasPlansizOnThisDay) skipStandby = true;
                     } else if (isStandby) {
-                        if (isTechPerson && isWk && hasDutyOnThisDay) skipStandby = true;
+                        // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
+                        if (isTechPerson && (hasPlansizOnThisDay || hasDutyOnThisDay)) skipStandby = true;
                     }
                     if (isAuto && (isStandby || isHolidayStandby) && skipStandby) return false;
 
@@ -2148,6 +2160,7 @@
 
                 // Pre-compute O(1) Sets
                 const dutyDaysSet = new Set();
+                const plansizDaysSet = new Set();
                 filteredTransactions.forEach(oTx => {
                     const oId = String(oTx.id || oTx.ID || '').toLowerCase();
                     const oIsAuto = oId.startsWith('auto-') || oId.includes('sync');
@@ -2156,8 +2169,12 @@
                     const oIsPlansiz = oTx.isPlansiz === true || oTx.IS_PLANSIZ === true || oId.startsWith('manual-tx') || oId.startsWith('manual-override') || oDesc.includes('PLANSIZ') || (!oIsAuto && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED'));
                     const oIsStandby = oIsAuto && !oIsPlansiz && (oId.includes('standby') || oDesc.includes('BEKLEME'));
                     const oIsFmi = !oIsPlansiz && (oDesc.includes('FMİ') || oDesc.includes('FMI') || oDesc.includes('F.M.İ'));
+                    const key = `${cleanPersonnelId(oTx.personId || oTx.PERSONID)}_${formatDateLocal(oTx.date || oTx.DATE)}`;
+                    if (oIsPlansiz) {
+                        plansizDaysSet.add(key);
+                    }
                     if (oIsPlansiz || (!oIsStandby && !oIsFmi && (oType === TRANSACTION_TYPES.EARNED || oType === 'EARNED'))) {
-                        dutyDaysSet.add(`${cleanPersonnelId(oTx.personId || oTx.PERSONID)}_${formatDateLocal(oTx.date || oTx.DATE)}`);
+                        dutyDaysSet.add(key);
                     }
                 });
 
@@ -2327,14 +2344,7 @@
                                 map[pid].notesBreakdown[n] = (map[pid].notesBreakdown[n] || 0) + rawH;
                             }
 
-                            const pObj = personnelMap.get(cleanPersonnelId(pid)) || personnel.find(p => cleanPersonnelId(p.id) === cleanPersonnelId(pid));
-                            const pTitle = (pObj?.title || '').toLocaleUpperCase('tr-TR');
-                            const pFullName = (pObj?.fullName || '').toLocaleUpperCase('tr-TR');
-                            const isSerkanP = pFullName.includes('SERKAN KOTAN') || pFullName.includes('SERKAN KÖTEN');
-                            const isTechP = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => pTitle.includes(t)) && !isSerkanP;
-                            const isDriverP = checkIsDriver(pObj);
-                            const multP = isDriverP ? 1 : getMultiplier(dayType, isTechP);
-                            const points = rawH * multP;
+                            const points = rawH; // No coefficient for Plansız Mesailer! Always 1.0!
                             map[pid].score += points;
                             map[pid].earned += rawH;
                             return;
@@ -2381,13 +2391,16 @@
                                 const isWk = cur.getDay() === 0 || cur.getDay() === 6;
                                 const isStandbyInYoklama = attendanceStandbySet.has(`${pid}_${curStr}`);
                                 const hasDutyOnThisDay = dutyDaysSet.has(`${pid}_${curStr}`);
+                                const hasPlansizOnThisDay = plansizDaysSet.has(`${pid}_${curStr}`);
                                 const isDriverOnly = checkIsDriverOnly(personObj);
                                 const isYerDestekPerson = checkIsYerDestek(personObj);
 
                                 const isDriverPerson = checkIsDriver(personObj) || isDriverOnly;
+                                const isTechPerson = checkIsTechnical(personObj);
 
                                 if (isHolidayStandby) {
-                                    if (processedDays.STANDBY.has(dayKey)) skip = true;
+                                    if (isAuto && isTechPerson && hasPlansizOnThisDay) skip = true;
+                                    else if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
                                         if (isDriverPerson) {
@@ -2397,7 +2410,9 @@
                                         }
                                     }
                                 } else if (isStandby) {
-                                    if (processedDays.STANDBY.has(dayKey)) skip = true;
+                                    // OGM1 (Teknik ekip): Plansız mesai girilmişse o güne otomatik bekleme 1 saat ya da 2 saat yazılmaz!
+                                    if (isAuto && isTechPerson && (hasPlansizOnThisDay || hasDutyOnThisDay)) skip = true;
+                                    else if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
                                         const isSpecialOneHourWeekend = (curStr === '2026-07-04');
@@ -3078,9 +3093,9 @@
                         const wkendData = b[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
                         const holidData = b[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
 
-                        const pWkday = (wkdayData.day + wkdayData.night) * getMultiplier(DAY_TYPES.WEEKDAY, isTech);
-                        const pWkend = (wkendData.day + wkendData.night) * getMultiplier(DAY_TYPES.WEEKEND, isTech);
-                        const pHolid = (holidData.day + holidData.night) * getMultiplier(DAY_TYPES.HOLIDAY, isTech);
+                        const pWkday = (wkdayData.day + wkdayData.night);
+                        const pWkend = (wkendData.day + wkendData.night);
+                        const pHolid = (holidData.day + holidData.night);
 
                         const att = getAttendanceRecord(p.id, selectedDate || formatDateLocal(new Date()));
                         const status = att.status || 'Mevcut';
@@ -3294,8 +3309,7 @@
                         } else if (isFmi || tx.type === TRANSACTION_TYPES.USED) {
                             calculatedUsed += hours;
                         } else if (isDuty && !isPlannedDuty) {
-                            const mult = getMultiplier(dayType, isTechnical);
-                            const pts = hours * (isDriver ? 1 : mult);
+                            const pts = hours; // Plansız mesailer katsayısız (birebir) alınır
                             calculatedPlansizPuan += pts;
                             calculatedEarned += hours;
                             if (dayType === DAY_TYPES.WEEKDAY) calculatedWkdayP += pts;
@@ -3710,9 +3724,9 @@
                     const wkendData = b[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
                     const holidData = b[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
                     
-                    const pWkday = (wkdayData.day + wkdayData.night) * getMultiplier(DAY_TYPES.WEEKDAY, isTech);
-                    const pWkend = (wkendData.day + wkendData.night) * getMultiplier(DAY_TYPES.WEEKEND, isTech);
-                    const pHolid = (holidData.day + holidData.night) * getMultiplier(DAY_TYPES.HOLIDAY, isTech);
+                    const pWkday = (wkdayData.day + wkdayData.night);
+                    const pWkend = (wkendData.day + wkendData.night);
+                    const pHolid = (holidData.day + holidData.night);
 
                     const att = getAttendanceRecord(p.id, selectedDate || formatDateLocal(new Date()));
                     const status = att.status || 'Mevcut';
@@ -4631,9 +4645,9 @@
                                                         const wkendData = b[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
                                                         const holidData = b[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
                                                         
-                                                        const pWkday = (wkdayData.day + wkdayData.night) * getMultiplier(DAY_TYPES.WEEKDAY, isTech);
-                                                        const pWkend = (wkendData.day + wkendData.night) * getMultiplier(DAY_TYPES.WEEKEND, isTech);
-                                                        const pHolid = (holidData.day + holidData.night) * getMultiplier(DAY_TYPES.HOLIDAY, isTech);
+                                                        const pWkday = (wkdayData.day + wkdayData.night);
+                                                        const pWkend = (wkendData.day + wkendData.night);
+                                                        const pHolid = (holidData.day + holidData.night);
                                                         
                                                         return (
                                                             <tr 
@@ -4747,21 +4761,24 @@
                                             </div>
                                         ) : (
                                             <div className="space-y-4">
-                                                <p className="text-xs text-forest-400 leading-relaxed">
-                                                    Tüm personel için mesai saatleri gün tipinden bağımsız olarak 1.0x çarpan ile birebir hesaplanır.
+                                                <p className="text-xs text-forest-300 leading-relaxed font-medium">
+                                                    Uçak Teknik Ekibi (OGM1) hesaplama kuralı: <strong className="text-white">PLANSIZ MESAİ + BEKLEME OTOMATİK + VARSA GÖREV OTOMATİK - KULLANIM = KALAN (NET BAKİYE)</strong>.
                                                 </p>
+                                                <div className="p-3 bg-purple-950/40 border border-purple-800/40 rounded-xl text-xs text-purple-200">
+                                                    📌 <strong>Bekleme Kuralı:</strong> Bir personelin bekleme günü varsa ve o güne plansız mesai girilmişse, o güne otomatik bekleme mesaisi (hafta içi 1 saat veya hafta sonu/tatil 2 saat) <span className="text-amber-400 font-bold">yazılmaz</span>.
+                                                </div>
                                                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                                     <div className="bg-forest-900/50 p-4 rounded-xl border border-forest-800 flex items-center justify-between">
-                                                        <span className="text-xs font-bold text-forest-300">Hafta İçi</span>
-                                                        <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x</span>
+                                                        <span className="text-xs font-bold text-forest-300">Hafta İçi Plansız</span>
+                                                        <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x (Katsayısız)</span>
                                                     </div>
                                                     <div className="bg-forest-900/50 p-4 rounded-xl border border-forest-800 flex items-center justify-between">
-                                                        <span className="text-xs font-bold text-forest-300">Hafta Sonu</span>
-                                                        <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x</span>
+                                                        <span className="text-xs font-bold text-forest-300">Hafta Sonu Plansız</span>
+                                                        <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x (Katsayısız)</span>
                                                     </div>
                                                     <div className="bg-forest-900/50 p-4 rounded-xl border border-forest-800 flex items-center justify-between">
-                                                        <span className="text-xs font-bold text-forest-300">Resmi Tatil</span>
-                                                        <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x</span>
+                                                        <span className="text-xs font-bold text-forest-300">Resmi Tatil Plansız</span>
+                                                        <span className="bg-forest-800 px-2 py-1 rounded text-[10px] font-black text-white">1.0x (Katsayısız)</span>
                                                     </div>
                                                 </div>
                                             </div>
@@ -5052,6 +5069,16 @@
                                                !isExcluded;
                                     }).filter(r => {
                                         const dateStr = normalizeDateSimple(r.date || r.DATE);
+                                        const isTechPerson = checkIsTechnical(selectedPerson);
+                                        // OGM1 (Teknik personel): O güne plansız mesai girilmişse otomatik bekleme YAZILMAZ!
+                                        const hasPlansizOnDate = combined.some(tx => {
+                                            const d = normalizeDateSimple(tx.date || tx.DATE);
+                                            const id = String(tx.id || tx.ID || '').toLowerCase();
+                                            const isPlansiz = tx.isPlansiz || id.startsWith('manual-tx') || id.startsWith('plansiz') || id.startsWith('sheet_tx');
+                                            return d === dateStr && isPlansiz;
+                                        });
+                                        if (isTechPerson && hasPlansizOnDate) return false;
+
                                         return !combined.some(tx => {
                                             const d = normalizeDateSimple(tx.date || tx.DATE);
                                             const id = String(tx.id || tx.ID || '').toLowerCase();
@@ -5243,9 +5270,9 @@
                                     const wkendData = targetStats.breakdown?.[DAY_TYPES.WEEKEND] || { day: 0, night: 0 };
                                     const holidData = targetStats.breakdown?.[DAY_TYPES.HOLIDAY] || { day: 0, night: 0 };
                                     
-                                    const pWkday = (wkdayData.day + wkdayData.night) * getMultiplier(DAY_TYPES.WEEKDAY, isTech);
-                                    const pWkend = (wkendData.day + wkendData.night) * getMultiplier(DAY_TYPES.WEEKEND, isTech);
-                                    const pHolid = (holidData.day + holidData.night) * getMultiplier(DAY_TYPES.HOLIDAY, isTech);
+                                    const pWkday = (wkdayData.day + wkdayData.night);
+                                    const pWkend = (wkendData.day + wkendData.night);
+                                    const pHolid = (holidData.day + holidData.night);
                                     const totalPlansizPuan = pWkday + pWkend + pHolid;
 
                                     return (
