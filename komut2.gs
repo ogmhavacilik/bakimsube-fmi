@@ -1,6 +1,18 @@
-const PERSONNEL_SHEET_ID = "1EbwS6gIo8DHIdpZKyrX4JwM0aDejCrhRBsK-PK0f_fk";
-const MAIN_DB_SHEET_ID = "1QY6ETO3zQ_zQfxZIRm5gPj5YnA3y1h41bGEHVqSQEp4";
+// =========================================================================
+// OGM PERSONEL, YOKLAMA VE PLANSIZ İŞLEMLER GOOGLE APPS SCRIPT
+// E-Tablo ID: 1EbwS6gIo8DHIdpZKyrX4JwM0aDejCrhRBsK-PK0f_fk
+// =========================================================================
+
+const SPREADSHEET_ID = "1QY6ETO3zQ_zQfxZIRm5gPj5YnA3y1h41bGEHVqSQEp4";
 const SYSTEM_ID = "0005536572913";
+
+function getSpreadsheet() {
+  try {
+    return SpreadsheetApp.openById(SPREADSHEET_ID);
+  } catch (e) {
+    return SpreadsheetApp.getActiveSpreadsheet();
+  }
+}
 
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : "get_init_data";
@@ -18,16 +30,35 @@ function doGet(e) {
                          .setMimeType(ContentService.MimeType.JSON);
   }
   
-  return ContentService.createTextOutput("Sistem Aktif (Read-Only) - V4: Personel, Yoklama ve Plansız İşlemler Aktif");
+  return ContentService.createTextOutput("Sistem Aktif - Personel, Yoklama ve Plansız İşlemler Entegrasyonu Çalışıyor.");
 }
 
 function doPost(e) {
   var output = { success: false, error: "Bilinmeyen istek" };
   
   try {
-    var contents = e.postData ? e.postData.contents : "{}";
-    var body = JSON.parse(contents);
-    var action = body.action || "get_init_data";
+    var body = null;
+    var contents = (e && e.postData && e.postData.contents) ? e.postData.contents : "";
+    
+    if (contents) {
+      try {
+        body = JSON.parse(contents);
+      } catch (parseErr) {
+        body = null;
+      }
+    }
+    
+    if (!body && e && e.parameter) {
+      if (e.parameter.postData) {
+        try { body = JSON.parse(e.parameter.postData); } catch (pErr) {}
+      }
+      if (!body && e.parameter.action) {
+        body = e.parameter;
+      }
+    }
+    
+    if (!body) body = {};
+    var action = body.action || (e && e.parameter && e.parameter.action) || "save_overtime";
 
     if (action === "get_init_data") {
       output = {
@@ -38,8 +69,14 @@ function doPost(e) {
           transactions: getTransactions()
         }
       };
+    } else if (action === "save_overtime" || action === "save_fmi" || action === "add_overtime" || action === "use_permit") {
+      output = saveOvertime(body);
+    } else if (action === "approve_overtime") {
+      output = approveOvertime(body);
+    } else if (action === "delete_overtime") {
+      output = deleteOvertime(body);
     } else {
-      output = { success: false, error: "Sistem sadece veri okuma (Read-Only) modundadır." };
+      output = saveOvertime(body);
     }
   } catch (error) {
     output = { success: false, error: error.toString() };
@@ -49,34 +86,155 @@ function doPost(e) {
                        .setMimeType(ContentService.MimeType.JSON);
 }
 
-function getPersonnelDb() {
-  try {
-    return SpreadsheetApp.openById(PERSONNEL_SHEET_ID);
-  } catch (e) {
-    return SpreadsheetApp.getActiveSpreadsheet();
-  }
-}
-
-function getMainDb() {
-  try {
-    return SpreadsheetApp.openById(MAIN_DB_SHEET_ID);
-  } catch (e) {
+function getOrCreatePlansizSheet(db) {
+  var targetSheets = [
+    "plansız işlemler", "Plansız İşlemler", "PLANSIZ İŞLEMLER",
+    "plansız ıslemler", "Plansız Isılemler", "PLANSIZ ISLEMLER",
+    "plansız islemler", "Plansız Islemler",
+    "plansiz islemler", "Plansiz Islemler",
+    "plansız mesai", "Plansız Mesai", "PLANSIZ MESAİ",
+    "plansiz mesai", "Plansiz Mesai", "PLANSIZ MESAI"
+  ];
+  
+  var sheet = getSheetSafely(db, targetSheets);
+  if (!sheet) {
+    // Sayfa yoksa otomatik oluştur
     try {
-      return SpreadsheetApp.openById(PERSONNEL_SHEET_ID);
-    } catch (e2) {
-      return SpreadsheetApp.getActiveSpreadsheet();
+      sheet = db.insertSheet("Plansız İşlemler");
+      var defaultHeaders = ["ID", "PersonId", "PersonName", "Date", "EndDate", "Days", "Hours", "Type", "Shift", "DayType", "Description", "Status", "Timestamp", "CreatedAt", "Note"];
+      sheet.appendRow(defaultHeaders);
+      sheet.getRange(1, 1, 1, defaultHeaders.length).setFontWeight("bold").setBackground("#e2e8f0");
+    } catch (createErr) {
+      sheet = db.getSheets()[0];
     }
   }
+  return sheet;
+}
+
+function saveOvertime(body) {
+  var tx = body.transaction || body;
+  var db = getSpreadsheet();
+  if (!db) {
+    return { success: false, error: "Google E-Tablo açılamadı." };
+  }
+  
+  var sheet = getOrCreatePlansizSheet(db);
+  var data = sheet.getDataRange().getValues();
+  var headers = data.length > 0 ? data[0] : [];
+  
+  var id = tx.rawTxId || tx.id || ("manual-tx-" + new Date().getTime());
+  var personId = tx.personId || tx.PersonId || tx.PID || "";
+  var personName = tx.personName || tx.PersonName || tx.NAME || "";
+  var date = tx.date || tx.Date || "";
+  var endDate = tx.endDate || tx.EndDate || date;
+  var days = tx.days !== undefined ? tx.days : 1;
+  var hours = tx.hours !== undefined ? tx.hours : 0;
+  var isUsed = String(tx.type || "").toUpperCase().includes("USE") || String(tx.type || "").toUpperCase().includes("IZIN");
+  var type = isUsed ? "USED" : "EARNED";
+  var shift = tx.shift || tx.Shift || "Gündüz";
+  var dayType = tx.dayType || tx.DayType || "Hafta İçi";
+  var description = tx.description || tx.Description || tx.note || (isUsed ? "FMİ İZNİ" : "PLANSIZ MESAİ");
+  var status = tx.status || tx.Status || "APPROVED";
+  var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+3", "dd.MM.yyyy HH:mm:ss");
+  var createdAt = tx.createdAt || tx.CreatedAt || timestamp;
+  var note = tx.note || tx.Note || description;
+  
+  if (headers.length > 0) {
+    var newRow = [];
+    for (var j = 0; j < headers.length; j++) {
+      var h = String(headers[j]).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (h === "ID" || h === "TRANSACTIONID") newRow.push(id);
+      else if (h === "PERSONID" || h === "PID" || h === "TCNO") newRow.push(personId);
+      else if (h === "PERSONNAME" || h === "ADSOYAD" || h === "NAME") newRow.push(personName);
+      else if (h === "DATE" || h === "TARIH") newRow.push(date);
+      else if (h === "ENDDATE" || h === "BITISTARIHI") newRow.push(endDate);
+      else if (h === "DAYS" || h === "GUN") newRow.push(days);
+      else if (h === "HOURS" || h === "SAAT" || h === "SURE") newRow.push(hours);
+      else if (h === "TYPE" || h === "TIP") newRow.push(type);
+      else if (h === "SHIFT" || h === "VARDIYA") newRow.push(shift);
+      else if (h === "DAYTYPE" || h === "GUNTIPI") newRow.push(dayType);
+      else if (h === "DESCRIPTION" || h === "ACIKLAMA" || h === "GOREV") newRow.push(description);
+      else if (h === "STATUS" || h === "DURUM") newRow.push(status);
+      else if (h === "TIMESTAMP" || h === "ZAMANDAMGASI") newRow.push(timestamp);
+      else if (h === "CREATEDAT" || h === "OLUSTURMATARIHI") newRow.push(createdAt);
+      else if (h === "NOTE" || h === "NOT") newRow.push(note);
+      else newRow.push("");
+    }
+    sheet.appendRow(newRow);
+  } else {
+    sheet.appendRow([id, personId, personName, date, endDate, days, hours, type, shift, dayType, description, status, timestamp, createdAt, note]);
+  }
+  
+  return {
+    success: true,
+    message: "Plansız işlem kaydı e-tabloya başarıyla eklendi.",
+    id: id,
+    sheet: sheet.getName()
+  };
+}
+
+function approveOvertime(body) {
+  var id = body.id || (body.transaction && body.transaction.id);
+  if (!id) return { success: false, error: "ID bulunamadı" };
+  
+  var db = getSpreadsheet();
+  var sheet = getOrCreatePlansizSheet(db);
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return { success: true, message: "Tablo boş" };
+  
+  var headers = data[0];
+  var idCol = -1;
+  var statusCol = -1;
+  for (var j = 0; j < headers.length; j++) {
+    var h = String(headers[j]).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (h === "ID" || h === "TRANSACTIONID") idCol = j;
+    if (h === "STATUS" || h === "DURUM") statusCol = j;
+  }
+  
+  if (idCol !== -1 && statusCol !== -1) {
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][idCol]).trim() === String(id).trim()) {
+        sheet.getRange(i + 1, statusCol + 1).setValue("APPROVED");
+        return { success: true, message: "Kayıt onaylandı." };
+      }
+    }
+  }
+  return { success: true, message: "Kayıt durumu güncellendi." };
+}
+
+function deleteOvertime(body) {
+  var id = body.id;
+  if (!id) return { success: false, error: "ID bulunamadı" };
+  
+  var db = getSpreadsheet();
+  var sheet = getOrCreatePlansizSheet(db);
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return { success: true, message: "Tablo boş" };
+  
+  var headers = data[0];
+  var idCol = -1;
+  for (var j = 0; j < headers.length; j++) {
+    var h = String(headers[j]).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (h === "ID" || h === "TRANSACTIONID") idCol = j;
+  }
+  
+  if (idCol !== -1) {
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][idCol]).trim() === String(id).trim()) {
+        sheet.deleteRow(i + 1);
+        return { success: true, message: "Kayıt silindi." };
+      }
+    }
+  }
+  return { success: true, message: "Silme tamamlandı." };
 }
 
 function getSheetSafely(db, possibleNames) {
   if (!db) return null;
-  // 1. Direct name match
   for (var i = 0; i < possibleNames.length; i++) {
     var s = db.getSheetByName(possibleNames[i]);
     if (s) return s;
   }
-  // 2. Normalized name match across all sheets in db
   try {
     var allSheets = db.getSheets();
     var cleanStr = function(str) {
@@ -100,12 +258,8 @@ function getSheetSafely(db, possibleNames) {
 }
 
 function getAttendance() {
-  var perDb = getPersonnelDb();
-  var sheet = getSheetSafely(perDb, ["Yoklama", "YOKLAMA", "ATTENDANCE"]);
-  if (!sheet) {
-    var mainDb = getMainDb();
-    sheet = getSheetSafely(mainDb, ["Yoklama", "YOKLAMA", "ATTENDANCE"]);
-  }
+  var db = getSpreadsheet();
+  var sheet = getSheetSafely(db, ["Yoklama", "YOKLAMA", "ATTENDANCE"]);
   if (!sheet) return [];
   
   var data = sheet.getDataRange().getValues();
@@ -141,12 +295,8 @@ function getAttendance() {
 }
 
 function getPersonnel() {
-  var perDb = getPersonnelDb();
-  var sheet = getSheetSafely(perDb, ["Personel", "PERSONEL", "PERSONNEL"]);
-  if (!sheet) {
-    var mainDb = getMainDb();
-    sheet = getSheetSafely(mainDb, ["Personel", "PERSONEL", "PERSONNEL"]);
-  }
+  var db = getSpreadsheet();
+  var sheet = getSheetSafely(db, ["Personel", "PERSONEL", "PERSONNEL"]);
   if (!sheet) return [];
   
   var data = sheet.getDataRange().getValues();
@@ -182,22 +332,8 @@ function getPersonnel() {
 }
 
 function getTransactions() {
-  var targetSheets = [
-    "plansız işlemler", "Plansız İşlemler", "PLANSIZ İŞLEMLER",
-    "plansız ıslemler", "Plansız Isılemler", "PLANSIZ ISLEMLER",
-    "plansız islemler", "Plansız Islemler",
-    "plansiz islemler", "Plansiz Islemler",
-    "plansız mesai", "Plansız Mesai", "PLANSIZ MESAİ",
-    "plansiz mesai", "Plansiz Mesai", "PLANSIZ MESAI",
-    "plansiz", "plansız", "plansizislem", "plansizislemler"
-  ];
-  
-  var mainDb = getMainDb();
-  var sheet = getSheetSafely(mainDb, targetSheets);
-  if (!sheet) {
-    var perDb = getPersonnelDb();
-    sheet = getSheetSafely(perDb, targetSheets);
-  }
+  var db = getSpreadsheet();
+  var sheet = getOrCreatePlansizSheet(db);
   if (!sheet) return [];
   
   var data = sheet.getDataRange().getValues();
@@ -228,7 +364,6 @@ function getTransactions() {
         obj[header] = val;
       }
     }
-    // Benzersiz ID garantisi: Tabloda ID yoksa veya boşsa satır indeksi ile oluştur
     if (!obj["ID"] && !obj["id"] && !obj["TRANSACTION_ID"] && !obj["ISLEM_ID"]) {
       obj["ID"] = "sheet_tx_" + i;
     }

@@ -10,7 +10,7 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  // CORS support so external static deployments (like Netlify) can use this proxy safely
+  // CORS support
   app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
@@ -26,45 +26,199 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  // Per-URL in-memory cache for fast instant response and fallback
-  const urlCache = new Map<string, { data: any; timestamp: number }>();
+  const FAST_CSV_TRANSACTIONS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT3MCU4qhFXt1MJtK_ypsaEj2ZtqgJ_HZKAJU3AIA25dd-qhcotXNc-1Ks3YBalsJt_AAC3OwAanYbR/pub?output=csv&gid=1412906013";
+  const FAST_CSV_PERSONNEL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=0";
+  const FAST_CSV_ATTENDANCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=1568664684";
+  const DEFAULT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIcoXEFiU_BKRq5DuIMvsio5HYNvp_kMoQA0ynqht8BmKHq-FO6V28RnRQ9bwUFNay/exec";
 
-  // Secure backend proxy to bypass CORS/iframe restrictions for Google Apps Script
+  function parseCSV(text: string): string[][] {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const lines: string[][] = [];
+    let row: string[] = [''];
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      const next = text[i + 1];
+      if (c === '"') {
+        if (inQuotes && next === '"') {
+          row[row.length - 1] += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (c === ',' && !inQuotes) {
+        row.push('');
+      } else if ((c === '\r' || c === '\n') && !inQuotes) {
+        if (c === '\r' && next === '\n') i++;
+        lines.push(row);
+        row = [''];
+      } else {
+        row[row.length - 1] += c;
+      }
+    }
+    if (row.length > 1 || row[0] !== '') lines.push(row);
+    return lines;
+  }
+
+  function rowsToObjects(lines: string[][]): Record<string, any>[] {
+    if (lines.length < 2) return [];
+    const headers = lines[0].map(h => h.replace(/^\uFEFF/, '').trim());
+    const objs: Record<string, any>[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i];
+      if (row.length === 1 && !row[0]) continue;
+      const obj: Record<string, any> = {};
+      for (let j = 0; j < headers.length; j++) {
+        const header = headers[j];
+        if (!header) continue;
+        let val = row[j] !== undefined ? row[j].trim() : '';
+        const hLower = header.toLowerCase();
+        if (hLower === 'hours' || hLower === 'days' || hLower === 'sure' || hLower === 'puan' || hLower === 'saat') {
+          val = val.replace(',', '.');
+        }
+        obj[header] = val;
+        const camel = header.charAt(0).toLowerCase() + header.slice(1);
+        if (!(camel in obj)) obj[camel] = val;
+        if (!(hLower in obj)) obj[hLower] = val;
+        const upper = header.toUpperCase();
+        if (!(upper in obj)) obj[upper] = val;
+      }
+      objs.push(obj);
+    }
+    return objs;
+  }
+
+  // Fast CSV data endpoint - Pure live Google Sheets CSV, NO local JSON caching
+  app.get("/api/fast-data", async (req, res) => {
+    try {
+      const fetchUtf8 = async (url: string, timeoutMs: number) => {
+        const r = await fetch(url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now(), { 
+          signal: AbortSignal.timeout(timeoutMs), 
+          headers: { 
+            "User-Agent": "Mozilla/5.0", 
+            "Cache-Control": "no-cache, no-store, must-revalidate", 
+            "Pragma": "no-cache" 
+          } 
+        });
+        const buf = await r.arrayBuffer();
+        return new TextDecoder('utf-8').decode(buf);
+      };
+
+      const [resTx, resPer, resAtt] = await Promise.all([
+        fetchUtf8(FAST_CSV_TRANSACTIONS, 15000).catch(() => ""),
+        fetchUtf8(FAST_CSV_PERSONNEL, 15000).catch(() => ""),
+        fetchUtf8(FAST_CSV_ATTENDANCE, 20000).catch(() => "")
+      ]);
+
+      const csvTxObjs = resTx ? rowsToObjects(parseCSV(resTx)) : [];
+      const perObjs = resPer ? rowsToObjects(parseCSV(resPer)) : [];
+      const attObjs = resAtt ? rowsToObjects(parseCSV(resAtt)) : [];
+
+      const payload = {
+        transactions: csvTxObjs,
+        personnel: perObjs,
+        attendance: attObjs
+      };
+
+      return res.json({
+        success: true,
+        fromCache: false,
+        fetchedAt: new Date().toISOString(),
+        ...payload
+      });
+    } catch (err: any) {
+      console.error("Fast data fetch error:", err?.message || err);
+      return res.json({
+        success: false,
+        error: err?.message || String(err),
+        transactions: [],
+        personnel: [],
+        attendance: []
+      });
+    }
+  });
+
+  // Dedicated robust server proxy for saving overtime & sending data to Google Apps Script
+  app.post("/api/save-overtime", async (req, res) => {
+    try {
+      const txData = req.body.transaction || req.body;
+      const targetUrl = req.body.targetUrl || DEFAULT_APPS_SCRIPT_URL;
+
+      const requestBody = JSON.stringify({
+        action: "save_overtime",
+        transaction: txData,
+        sheet: "Plansız İşlemler"
+      });
+
+      console.log("Forwarding save-overtime to Apps Script:", targetUrl);
+
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: requestBody,
+        redirect: "follow",
+        signal: AbortSignal.timeout(25000)
+      });
+
+      const text = await response.text();
+      let resJson: any = null;
+      try { resJson = JSON.parse(text); } catch (e) {}
+
+      if (resJson && resJson.success) {
+        return res.json(resJson);
+      }
+      
+      // If Apps Script returned error or non-success
+      return res.status(500).json({
+        success: false,
+        error: resJson?.error || text || "Google Apps Script kayıt başarısız döndü."
+      });
+    } catch (e: any) {
+      console.error("Server save-overtime forward error:", e?.message || e);
+      return res.status(500).json({
+        success: false,
+        error: `Sunucu Apps Script yönlendirme hatası: ${e?.message || e}`
+      });
+    }
+  });
+
+  // Backend proxy for Google Apps Script requests
   app.all("/api/proxy", async (req, res) => {
-    // Support both GET query and POST body
     const body = req.method === "GET" ? req.query : req.body;
     const { targetUrl, action, ...payload } = body as any;
-    
-    if (!targetUrl) {
-      return res.status(400).json({ success: false, error: "Hedef URL (targetUrl) belirtilmedi." });
-    }
 
-    const cacheKey = `${targetUrl}_${action || 'get_init_data'}`;
+    const finalTargetUrl = targetUrl || DEFAULT_APPS_SCRIPT_URL;
+    if (!finalTargetUrl) {
+      return res.status(400).json({ success: false, error: "Hedef URL belirtilmedi." });
+    }
 
     try {
       let response: any;
       const isGet = (action === "get_init_data" || !action);
 
       if (isGet) {
-        const getUrl = targetUrl + (targetUrl.includes("?") ? "&" : "?") + `action=${encodeURIComponent(action || "get_init_data")}&_t=${Date.now()}`;
+        const getUrl = finalTargetUrl + (finalTargetUrl.includes("?") ? "&" : "?") + `action=${encodeURIComponent(action || "get_init_data")}&_t=${Date.now()}`;
         response = await fetch(getUrl, {
           method: "GET",
           headers: {
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "Cache-Control": "no-cache, no-store, must-revalidate"
           },
           redirect: "follow",
-          signal: AbortSignal.timeout(60000)
+          signal: AbortSignal.timeout(30000)
         });
       } else {
+        const postUrl = finalTargetUrl + (finalTargetUrl.includes("?") ? "&" : "?") + `action=${encodeURIComponent(action || "")}&_t=${Date.now()}`;
         const requestBody = JSON.stringify({ action, ...payload });
-        response = await fetch(targetUrl, {
+        response = await fetch(postUrl, {
           method: "POST",
           headers: {
-            "Content-Type": "text/plain;charset=utf-8"
+            "Content-Type": "text/plain;charset=utf-8",
+            "Cache-Control": "no-cache, no-store, must-revalidate"
           },
           body: requestBody,
           redirect: "follow",
-          signal: AbortSignal.timeout(60000)
+          signal: AbortSignal.timeout(20000)
         });
       }
 
@@ -77,9 +231,6 @@ async function startServer() {
       }
 
       if (responseJson && typeof responseJson === "object") {
-        if (action === "get_init_data" && responseJson.success && responseJson.data) {
-          urlCache.set(cacheKey, { data: responseJson, timestamp: Date.now() });
-        }
         return res.json(responseJson);
       } else {
         const textUpper = text.toUpperCase();
@@ -89,31 +240,14 @@ async function startServer() {
             error: "Giriş Gerekli: Google Apps Script 'Herkes' (Anyone) erişimine yetkilendirilmemiş olabilir."
           });
         }
-        if (text.includes("Page not found") || text.includes("file you have requested does not exist") || text.includes("unable to open the file") || text.trim().startsWith("<")) {
-          return res.status(404).json({
-            success: false,
-            error: "Google Apps Script servisine erişilemiyor veya adres geçersiz."
-          });
-        }
         return res.json({ success: true, data: text });
       }
     } catch (error: any) {
       const isTimeout = error.name === "AbortError" || error.name === "TimeoutError" || String(error).includes("timeout") || String(error).includes("aborted");
-      if (!isTimeout) {
-        console.error("Proxy Hatası:", error?.message || error);
-      }
-
-      // If we have cached data for this targetUrl and action, serve it during transient network timeout
-      const cached = urlCache.get(cacheKey);
-      if (action === "get_init_data" && cached && cached.data) {
-        console.log(`Serving cached data for ${cacheKey} after proxy timeout`);
-        return res.json(cached.data);
-      }
-
       return res.status(504).json({
         success: false,
         error: isTimeout 
-          ? "Sunucu yanıt süresi aşıldı (Zaman aşımı). Lütfen ağ bağlantınızı kontrol edip tekrar deneyiniz." 
+          ? "Sunucu yanıt süresi aşıldı (Zaman aşımı)." 
           : `Sunucu proxy hatası: ${error.message || "Bilinmeyen hata"}`
       });
     }

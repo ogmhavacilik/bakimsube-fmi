@@ -107,7 +107,7 @@
             USED: 'USED'      // Mesai Kullanıldı
         };
 
-        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIcoXEFiU_BKRq5DuIMvsio5HYNvp_kMoQA0ynqht8BmKHq-FO6V28RnRQ9bwUFNay/exec";
+        const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwLzv8kysv6V5h_zF2Q47KbigmviYJEzFvD8FnK56QZfGfbrfaEmDrdhHmj3Ap5kCN1qg/exec";
         const PERSONNEL_SCRIPT_URL = OVERTIME_SCRIPT_URL;
         const SYSTEM_ID = "0005536572913";
 
@@ -251,7 +251,23 @@
             return false;
         };
 
-        const normalizeDayType = (rawDayType, dateStr) => {
+        const parseTurkishFloat = (val) => {
+            if (val === null || val === undefined) return 0;
+            if (typeof val === 'number') return isNaN(val) ? 0 : val;
+            const s = String(val).replace(/\s+/g, '').replace(',', '.');
+            const n = parseFloat(s);
+            return isNaN(n) ? 0 : n;
+        };
+
+        const normalizeDayType = (rawDayType, dateStr, descStr) => {
+            const descCanon = toCanonicalAscii(descStr || '').replace(/[^A-Z]/g, '');
+            if (descCanon.includes('RESMITATIL') || descCanon.includes('TATIL') || descCanon.includes('BAYRAM') || descCanon.includes('AREFE')) {
+                return DAY_TYPES.HOLIDAY;
+            }
+            if (dateStr) {
+                const cal = getDayType(dateStr);
+                if (cal === DAY_TYPES.HOLIDAY) return DAY_TYPES.HOLIDAY;
+            }
             if (rawDayType && String(rawDayType).trim()) {
                 const c = toCanonicalAscii(rawDayType).replace(/[^A-Z]/g, '');
                 if (c.includes('RESMI') || c.includes('TATIL') || c.includes('BAYRAM') || c.includes('AREFE') || c.includes('HOLIDAY')) {
@@ -261,12 +277,15 @@
                     return DAY_TYPES.WEEKEND;
                 }
                 if (c.includes('ICI') || c.includes('IC') || c.includes('WEEKDAY') || c.includes('NORMAL')) {
+                    if (dateStr) {
+                        const cal = getDayType(dateStr);
+                        if (cal === DAY_TYPES.WEEKEND) return DAY_TYPES.WEEKEND;
+                        if (cal === DAY_TYPES.HOLIDAY) return DAY_TYPES.HOLIDAY;
+                    }
                     return DAY_TYPES.WEEKDAY;
                 }
             }
-            if (dateStr) {
-                return getDayType(dateStr);
-            }
+            if (dateStr) return getDayType(dateStr);
             return DAY_TYPES.WEEKDAY;
         };
 
@@ -308,6 +327,11 @@
         };
 
         const safeLocalStorageSetItem = (key, value) => {
+            // Verilerin önbelleğe kaydedilmesi kullanıcı talimatı gereği kesin olarak yasaklanmıştır
+            if (key.includes('transactions') || key.includes('tx') || key.includes('attendance') || key.includes('personnel') || key.includes('overtime')) {
+                try { localStorage.removeItem(key); } catch (e) {}
+                return;
+            }
             try {
                 localStorage.setItem(key, value);
             } catch (e) {
@@ -529,7 +553,78 @@
 
             const isGetMethod = action === 'get_init_data' || Object.keys(payload).length === 0;
 
-            // 1. Direct GET to Google Apps Script (Bypasses CORS restrictions on all domains with Access-Control-Allow-Origin: *)
+            // 1. FOR WRITE ACTIONS (save_overtime, save_fmi, etc.): Direct Browser POST first!
+            if (!isGetMethod) {
+                // A. Direct POST fetch from browser to Apps Script (Bypasses CORS preflight with text/plain)
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 20000);
+                    const directRes = await fetch(targetUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify(reqBodyObj),
+                        redirect: 'follow',
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+
+                    if (directRes.ok) {
+                        const text = await directRes.text();
+                        let directJson = null;
+                        try { directJson = JSON.parse(text); } catch (e) {}
+                        if (directJson && directJson.success) {
+                            return directJson.data || directJson;
+                        }
+                    }
+                } catch (directPostErr) {
+                    lastError = directPostErr;
+                }
+
+                // B. Invisible Form submission fallback (Native browser form post - always delivers payload to doPost(e) in Apps Script)
+                try {
+                    const iframeName = 'gas_post_frame_' + Date.now();
+                    const iframe = document.createElement('iframe');
+                    iframe.name = iframeName;
+                    iframe.style.display = 'none';
+                    document.body.appendChild(iframe);
+
+                    const form = document.createElement('form');
+                    form.target = iframeName;
+                    form.action = targetUrl;
+                    form.method = 'POST';
+
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'postData';
+                    input.value = JSON.stringify(reqBodyObj);
+                    form.appendChild(input);
+
+                    document.body.appendChild(form);
+                    form.submit();
+                    setTimeout(() => {
+                        try { form.remove(); iframe.remove(); } catch(e) {}
+                    }, 1500);
+                } catch (formErr) {
+                    console.warn("Form submission fallback error:", formErr);
+                }
+
+                // C. Local server save-overtime route
+                try {
+                    const serverRes = await fetch('/api/save-overtime', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ transaction: payload.transaction || payload, targetUrl: targetUrl })
+                    });
+                    if (serverRes.ok) {
+                        const serverJson = await serverRes.json();
+                        if (serverJson && serverJson.success) {
+                            return serverJson.data || serverJson;
+                        }
+                    }
+                } catch (srvErr) {}
+            }
+
+            // 2. Direct GET to Google Apps Script (Bypasses CORS restrictions on all domains with Access-Control-Allow-Origin: *)
             if (isGetMethod) {
                 try {
                     const controller = new AbortController();
@@ -538,6 +633,7 @@
                     const directRes = await fetch(directUrl, {
                         method: 'GET',
                         headers: { 'Accept': 'application/json' },
+                        redirect: 'follow',
                         signal: controller.signal
                     });
                     clearTimeout(timeoutId);
@@ -552,10 +648,10 @@
                 }
             }
 
-            // 2. Try local server proxy (/api/proxy)
+            // 3. Try local server proxy (/api/proxy)
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 45000);
+                const timeoutId = setTimeout(() => controller.abort(), 25000);
 
                 const proxyRes = await fetch('/api/proxy', {
                     method: 'POST',
@@ -581,56 +677,6 @@
                 }
             } catch (proxyErr) {
                 lastError = proxyErr;
-            }
-
-            // 3. Try deployed preview server proxy fallback (for external static sites like Netlify)
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 45000);
-                const cloudRunProxyUrl = 'https://ais-pre-inlnbhcb35ep74acdiakoj-216611645803.europe-west2.run.app/api/proxy';
-                const cloudRunRes = await fetch(cloudRunProxyUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        targetUrl: targetUrl,
-                        ...reqBodyObj
-                    }),
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-                if (cloudRunRes.ok) {
-                    const json = await cloudRunRes.json().catch(() => null);
-                    if (json && json.success && json.data) {
-                        return json.data;
-                    }
-                }
-            } catch (cloudRunErr) {
-                lastError = cloudRunErr;
-            }
-
-            // 4. Try direct POST to Google Apps Script (text/plain bypasses CORS preflight)
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-                const directRes = await fetch(targetUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify(reqBodyObj),
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-
-                if (directRes.ok) {
-                    const text = await directRes.text();
-                    let directJson = null;
-                    try { directJson = JSON.parse(text); } catch(e) {}
-                    if (directJson && directJson.success && directJson.data) {
-                        return directJson.data;
-                    }
-                }
-            } catch (directErr) {
-                lastError = directErr;
             }
 
             // 5. Try public CORS proxy fallbacks
@@ -824,24 +870,9 @@
 
         // --- MAIN APP ---
         const App = () => {
-            const [personnel, setPersonnel] = useState(() => {
-                try {
-                    const saved = localStorage.getItem('ogm_personnel');
-                    return saved ? JSON.parse(saved) : [];
-                } catch(e) { return []; }
-            });
-            const [transactions, setTransactions] = useState(() => {
-                try {
-                    const saved = localStorage.getItem('ogm_transactions') || localStorage.getItem('ogm_overtime_tx');
-                    return saved ? JSON.parse(saved) : [];
-                } catch(e) { return []; }
-            });
-            const [attendanceRecords, setAttendanceRecords] = useState(() => {
-                try {
-                    const saved = localStorage.getItem('ogm_attendance');
-                    return saved ? JSON.parse(saved) : [];
-                } catch(e) { return []; }
-            });
+            const [personnel, setPersonnel] = useState([]);
+            const [transactions, setTransactions] = useState([]);
+            const [attendanceRecords, setAttendanceRecords] = useState([]);
             const [loading, setLoading] = useState(false);
             const [isRefreshing, setIsRefreshing] = useState(false);
             const [loadingProgress, setLoadingProgress] = useState(0);
@@ -1448,9 +1479,12 @@
             const isStandbyDay = useMemo(() => {
                 const pid = selectedPerson?.id || formData.personId;
                 if (!pid || !formData.date) return false;
-                const status = getCurrentAttendanceStatus(pid, formData.date);
-                return (status || '').toUpperCase().includes('BEKLEME');
-            }, [formData.personId, formData.date, selectedPerson, attendanceRecords, getCurrentAttendanceStatus]);
+                const att = getAttendanceRecord(pid, formData.date) || {};
+                const s = toCanonicalAscii(att.status || '');
+                const n = toCanonicalAscii(att.note || '');
+                const l = toCanonicalAscii(att.location || '');
+                return s.includes('BEKLEME') || n.includes('BEKLEME') || l.includes('BEKLEME');
+            }, [formData.personId, formData.date, selectedPerson, attendanceRecords, getAttendanceRecord]);
 
              const refreshData = async (silent = false) => {
                 const prevAttendance = [...attendanceRecords];
@@ -1478,21 +1512,45 @@
                 }
 
                 try {
-                    // Paralel olarak çekimi yapıyoruz
-                    const fetchMain = apiCall('get_init_data', {}, OVERTIME_SCRIPT_URL).catch((err) => { 
-                        console.warn("Plansız Mesai çekme uyarısı:", err?.message || err); 
-                        return null; 
-                    });
-                    
-                    const fetchPersonnel = OVERTIME_SCRIPT_URL === PERSONNEL_SCRIPT_URL 
-                        ? Promise.resolve(null)
-                        : apiCall('get_init_data', {}, PERSONNEL_SCRIPT_URL).catch((err) => { 
-                            console.warn("Yoklama/Personel çekme uyarısı:", err?.message || err);
+                    let resMain = null;
+                    let resPersonnel = null;
+
+                    // 1. Önce hızlı CSV endpoint'inden anında verileri almayı dene
+                    try {
+                        const fastUrl = `/api/fast-data${!silent ? '?force=true' : ''}`;
+                        const fastResp = await fetch(fastUrl, { signal: AbortSignal.timeout(12000) });
+                        if (fastResp.ok) {
+                            const fastJson = await fastResp.json();
+                            if (fastJson && fastJson.success && (fastJson.personnel?.length > 0 || fastJson.transactions?.length > 0)) {
+                                resMain = {
+                                    personnel: fastJson.personnel || [],
+                                    transactions: fastJson.transactions || [],
+                                    attendance: fastJson.attendance || []
+                                };
+                            }
+                        }
+                    } catch (fastErr) {
+                        console.warn("Hızlı CSV servis uyarısı, Apps Script deneniyor:", fastErr);
+                    }
+
+                    // 2. Hızlı CSV'den veri gelmediyse Apps Script proxy ile çek
+                    if (!resMain || !resMain.personnel || resMain.personnel.length === 0) {
+                        const fetchMain = apiCall('get_init_data', {}, OVERTIME_SCRIPT_URL).catch((err) => { 
+                            console.warn("Plansız Mesai çekme uyarısı:", err?.message || err); 
                             return null; 
                         });
+                        
+                        const fetchPersonnel = OVERTIME_SCRIPT_URL === PERSONNEL_SCRIPT_URL 
+                            ? Promise.resolve(null)
+                            : apiCall('get_init_data', {}, PERSONNEL_SCRIPT_URL).catch((err) => { 
+                                console.warn("Yoklama/Personel çekme uyarısı:", err?.message || err);
+                                return null; 
+                            });
 
-                    const [resMain, resPersonnelRaw] = await Promise.all([fetchMain, fetchPersonnel]);
-                    const resPersonnel = OVERTIME_SCRIPT_URL === PERSONNEL_SCRIPT_URL ? resMain : resPersonnelRaw;
+                        const [rMain, rPerRaw] = await Promise.all([fetchMain, fetchPersonnel]);
+                        resMain = rMain;
+                        resPersonnel = OVERTIME_SCRIPT_URL === PERSONNEL_SCRIPT_URL ? rMain : rPerRaw;
+                    }
 
                     if (!resMain && !resPersonnel) {
                         const hasCachedPersonnel = personnel && personnel.length > 0;
@@ -1509,7 +1567,7 @@
                         setVerifiedCategories({ plansiz: true, gorev: false, bekleme: false, fmi: false });
                     }
 
-                    // De-duplicate personnel by ID from both sources
+                    // De-duplicate personnel by ID from all sources
                     const personnelMap = {};
                     const processList = (list) => {
                         if (!list) return;
@@ -1524,6 +1582,7 @@
                     processList(resPersonnel?.personnel);
                     const combinedPersonnel = Object.values(personnelMap);
 
+                    // De-duplicate transactions strictly by canonical fingerprint
                     const getCombinedList = (list1, list2) => {
                         const arr1 = Array.isArray(list1) ? list1 : [];
                         const arr2 = Array.isArray(list2) ? list2 : [];
@@ -1533,21 +1592,16 @@
                         if (list1 === list2) return arr1;
 
                         const m = new Map();
-                        [...arr1, ...arr2].forEach((item, idx) => {
-                            const isPlansiz = item.isPlansiz === true || item.IS_PLANSIZ === true || isPlansizTransaction(item);
-                            let k;
-                            if (isPlansiz) {
-                                const rowIdx = item.ROW_INDEX !== undefined ? item.ROW_INDEX : '';
-                                const pid = cleanPersonnelId(item.PersonId || item.PersonID || item.PERSONID || item.personId || item.PID || '');
-                                const dt = item.Date || item.DATE || item.date || '';
-                                const hrs = item.Hours || item.HOURS || item.hours || '';
-                                const desc = item.Description || item.DESCRIPTION || item.aciklama || item.ACIKLAMA || '';
-                                const ts = item.Timestamp || item.TIMESTAMP || item.CreatedAt || '';
-                                const id = item.ID || item.id || '';
-                                k = `plansiz_${id}_${pid}_${dt}_${hrs}_${desc}_${ts}_row${rowIdx}`;
-                            } else {
-                                k = item.ID || item.id || `${cleanPersonnelId(item.PERSONID || item.PERSON_ID || item.personId)}_${item.DATE || item.date}_${item.HOURS || item.hours}`;
-                            }
+                        [...arr1, ...arr2].forEach((item) => {
+                            const pid = cleanPersonnelId(item.PersonId || item.PersonID || item.PERSONID || item.personId || item.PID || item.TCNO || '');
+                            const dt = String(item.Date || item.DATE || item.date || '').split('T')[0];
+                            const hrs = parseFloat(String(item.Hours || item.HOURS || item.hours || 0).replace(',', '.')).toFixed(1);
+                            const typ = toCanonicalAscii(item.Type || item.TYPE || item.type || '');
+                            const desc = toCanonicalAscii(item.Description || item.DESCRIPTION || item.aciklama || item.ACIKLAMA || item.gorev || item.GOREV || '').replace(/\s+/g, ' ').trim();
+                            const st = item.StartTime || item.START_TIME || item.startTime || '';
+                            const et = item.EndTime || item.END_TIME || item.endTime || '';
+                            
+                            const k = `${pid}_${dt}_${hrs}_${typ}_${st}_${et}_${desc}`;
                             if (!m.has(k)) m.set(k, item);
                         });
                         return Array.from(m.values());
@@ -1609,7 +1663,6 @@
                             };
                         });
                         setPersonnel(formattedPL);
-                        safeLocalStorageSetItem('ogm_personnel', JSON.stringify(formattedPL));
                     }
 
                     let latestTxList = [];
@@ -1666,13 +1719,11 @@
                                 return t || TRANSACTION_TYPES.EARNED;
                             })();
 
-                            let hoursVal = parseFloat(String(getVal(tx, ['HOURS', 'SAATLER', 'SURE', 'SÜRE', 'SAAT', 'MESAİ_SAATİ', 'MESAISAATI', 'MESAI_SAATI', 'PUAN']) || 0).replace(',', '.'));
-                            if (isNaN(hoursVal) || hoursVal <= 0) {
-                                hoursVal = parseFloat(String(tx.HOURS || tx.hours || tx.displayHours || tx.PUAN || tx.puan || 0).replace(',', '.'));
-                            }
+                            let hoursVal = parseTurkishFloat(getVal(tx, ['HOURS', 'SAATLER', 'SURE', 'SÜRE', 'SAAT', 'MESAİ_SAATİ', 'MESAISAATI', 'MESAI_SAATI', 'PUAN']) || tx.HOURS || tx.hours || tx.displayHours || tx.PUAN || tx.puan || 0);
 
                             const rawDayTypeVal = getVal(tx, ['DAY_TYPE', 'DAYTYPE', 'GUN_TIPI', 'GÜN_TİPİ', 'GUN TIPI', 'GÜN TİPİ']);
-                            const normalizedDayType = normalizeDayType(rawDayTypeVal, txDateVal);
+                            const descVal = getVal(tx, ['DESCRIPTION', 'ACIKLAMA', 'AÇIKLAMA', 'ACIKLAMALAR', 'AÇIKLAMALAR', 'GOREV', 'GÖREV', 'MESAI', 'MESAİ']) || tx.description || tx.DESCRIPTION || '';
+                            const normalizedDayType = normalizeDayType(rawDayTypeVal, txDateVal, descVal);
                             const rawShiftVal = getVal(tx, ['SHIFT', 'VARDIYA', 'VARDİYA', 'GECE_GUNDUZ', 'GECE_GÜNDÜZ', 'CALISMA_SEKLI']);
                             const normalizedShift = normalizeShift(rawShiftVal);
 
@@ -1694,12 +1745,13 @@
                                 endTime: getVal(tx, ['END_TIME', 'ENDTIME', 'BITIS_SAATI', 'B_SAATI']),
                                 hours: hoursVal,
                                 days: parseInt(String(getVal(tx, ['DAYS', 'GUNLER', 'GUN', 'GÜN']) || 1)),
-                                description: getVal(tx, ['DESCRIPTION', 'ACIKLAMA', 'AÇIKLAMA', 'ACIKLAMALAR', 'AÇIKLAMALAR', 'ACIKLAMASI', 'AÇIKLAMASI', 'GOREV', 'GÖREV', 'GOREVI', 'GÖREVİ', 'ISLEM', 'İŞLEM', 'ISLEM_ACIKLAMASI', 'İŞLEM_AÇIKLAMASI', 'MESAI_ACIKLAMASI', 'MESAİ_AÇIKLAMASI', 'MESAİ', 'MESAI']) || tx.description || tx.DESCRIPTION || tx.aciklama || tx.Açıklama || 'PLANSIZ MESAİ',
+                                description: descVal || 'PLANSIZ MESAİ',
                                 note: getVal(tx, ['NOTE', 'NOT', 'NOTLAR', 'NOTES', 'BILGI', 'BİLGİ', 'NOTU', 'NOTI']) || tx.note || tx.NOTE || '',
                                 shift: normalizedShift,
                                 dayType: normalizedDayType,
                                 type: txTypeCalculated,
                                 isPlansiz: isPlansiz,
+                                sheet: 'Plansız İşlemler',
                                 status: (() => {
                                     const s = toCanonicalAscii(getVal(tx, ['STATUS', 'DURUM']) || '');
                                     if (s === 'APPROVED' || s.includes('ONAY') || s === 'MODIFIED') return 'APPROVED';
@@ -1711,10 +1763,27 @@
                             };
                         }).filter(tx => tx.personId || tx.personName);
 
-                        if (formattedTX.length > 0) {
-                            latestTxList = formattedTX;
-                            setTransactions(formattedTX);
-                            safeLocalStorageSetItem('ogm_overtime_tx', JSON.stringify(formattedTX));
+                        // Strictly deduplicate transactions so no identical record appears twice
+                        const seenTxKeys = new Set();
+                        const uniqueFormattedTX = [];
+                        for (const tx of formattedTX) {
+                            const pid = cleanPersonnelId(tx.personId || '');
+                            const dt = String(tx.date || '').split('T')[0];
+                            const hrs = parseTurkishFloat(tx.hours || 0).toFixed(1);
+                            const typ = toCanonicalAscii(tx.type || '');
+                            const desc = toCanonicalAscii(tx.description || '').replace(/\s+/g, ' ').trim();
+                            const st = tx.startTime || '';
+                            const et = tx.endTime || '';
+                            const key = `${pid}_${dt}_${hrs}_${typ}_${st}_${et}_${desc}`;
+                            if (!seenTxKeys.has(key)) {
+                                seenTxKeys.add(key);
+                                uniqueFormattedTX.push(tx);
+                            }
+                        }
+
+                        if (uniqueFormattedTX.length > 0) {
+                            latestTxList = uniqueFormattedTX;
+                            setTransactions(uniqueFormattedTX);
                         }
                     }
                     
@@ -1801,7 +1870,6 @@
                         if (sortedAttendance.length > 0) {
                             latestAttList = sortedAttendance;
                             setAttendanceRecords(sortedAttendance);
-                            safeLocalStorageSetItem('ogm_attendance', JSON.stringify(sortedAttendance));
                         }
                     }
 
@@ -1903,36 +1971,19 @@
                 await refreshData(false);
             };
 
-            // Load Initial Data (Fetch fresh live data)
+            // Load Initial Data (Fetch fresh live data, clear all local cache)
             useEffect(() => {
                 const init = async () => {
-                    // Always reset admin role on refresh so re-login is required
-                    localStorage.removeItem('ogm_admin_role');
+                    try {
+                        Object.keys(localStorage).forEach(k => {
+                            if (k.startsWith('ogm_') || k.includes('tx') || k.includes('transaction') || k.includes('attendance') || k.includes('personnel')) {
+                                localStorage.removeItem(k);
+                            }
+                        });
+                        sessionStorage.clear();
+                    } catch (e) {}
                     setAdminRole(null);
                     
-                    // 1. Instantly load local/static data on initial open so table is populated immediately
-                    try {
-                        const localPL = localStorage.getItem('ogm_personnel');
-                        const localTX = localStorage.getItem('ogm_overtime_tx');
-                        if (localPL && localTX) {
-                            setPersonnel(JSON.parse(localPL));
-                            setTransactions(JSON.parse(localTX));
-                        } else {
-                            const res = await fetch('/cached_init_data.json').catch(() => null);
-                            if (res && res.ok) {
-                                const json = await res.json().catch(() => null);
-                                if (json && json.data) {
-                                    if (json.data.personnel) setPersonnel(json.data.personnel);
-                                    if (json.data.transactions) setTransactions(json.data.transactions);
-                                    if (json.data.attendance) setAttendanceRecords(json.data.attendance);
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        console.warn("İlk yükleme önbellek okuma hatası:", e);
-                    }
-
-                    // 2. Automatically pull fresh live data from Google Sheet on load
                     refreshData(false);
                 };
                 init();
@@ -2183,13 +2234,9 @@
 
                     let skipStandby = false;
                     if (isHolidayStandby) {
-                        // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
-                        if (hasPlansizOnThisDay) skipStandby = true;
-                        else if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
+                        if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
                     } else if (isStandby) {
-                        // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
-                        if (hasPlansizOnThisDay) skipStandby = true;
-                        else if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
+                        if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
                     }
                     if (isAuto && (isStandby || isHolidayStandby) && skipStandby) return false;
 
@@ -2872,8 +2919,11 @@
                             showToast("Talep incelendi, onaylandı ve sisteme işlendi.");
 
                             // Background sync
-//                             apiCall('approve_overtime', { id: selectedPendingTx.id, transaction: updatedTx }, OVERTIME_SCRIPT_URL)
-//                                 .catch(err => showToast("Sunucu onaylama uyarısı: " + (err.message || err), "error"));
+                            apiCall('approve_overtime', { id: selectedPendingTx.id, transaction: updatedTx }, OVERTIME_SCRIPT_URL)
+                                .then(() => {
+                                    fetch('/api/fast-data?force=true').catch(() => {});
+                                })
+                                .catch(err => console.warn("Sunucu onaylama uyarısı (yerel onay başarılı):", err?.message || err));
                         } catch (err) {
                             showToast("Onaylama hatası: " + (err.message || err), "error");
                         } finally {
@@ -2908,13 +2958,9 @@
                             for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
                                 const dateStr = formatDateLocal(d);
                                 const status = getCurrentAttendanceStatus(pid, dateStr);
-                                const statusUpper = String(status || '').toUpperCase();
-                                
-                                // If status is not "Mevcut" and implies some other duty/leave
-                                if (statusUpper !== 'MEVCUT' && statusUpper !== '' && statusUpper !== 'YÜKLENİYOR...') {
-                                    setIsSaving(false);
-                                    showToast(`DİKKAT: ${pid} nolu personel için ${dateStr} tarihinde zaten bir görev veya durum (${status}) mevcut!`, 'warning');
-                                    return;
+                                const statusUpper = String(status || '').toLocaleUpperCase('tr-TR');
+                                if (statusUpper.includes('RAPOR')) {
+                                    showToast(`BİLGİ: ${pid} nolu personel için ${dateStr} tarihinde rapor kaydı bulunuyor.`, 'info');
                                 }
                             }
                         }
@@ -2949,18 +2995,14 @@
                             }
                         }
 
-                        const overlap = transactions.find(tx => 
-                            tx && tx.personId === pid && 
-                            tx.date === formData.date && 
-                            tx.status !== 'REJECTED' &&
-                            tx.type === TRANSACTION_TYPES.EARNED &&
-                            tx.startTime && tx.endTime &&
-                            (
-                                (formData.startTime >= tx.startTime && !(formData.startTime >= tx.endTime)) ||
-                                (formData.endTime > tx.startTime && !(formData.endTime > tx.endTime)) ||
-                                (tx.startTime >= formData.startTime && !(tx.startTime >= formData.endTime))
-                            )
-                        );
+                        const overlap = transactions.find(tx => {
+                            if (!tx || tx.personId !== pid || tx.date !== formData.date || tx.status === 'REJECTED' || tx.type !== TRANSACTION_TYPES.EARNED) {
+                                return false;
+                            }
+                            if (!tx.startTime || !tx.endTime || !formData.startTime || !formData.endTime) return false;
+                            if (tx.startTime === tx.endTime || formData.startTime === formData.endTime) return false;
+                            return formData.startTime < tx.endTime && formData.endTime > tx.startTime;
+                        });
 
                         if (overlap) {
                             setIsSaving(false);
@@ -3002,39 +3044,22 @@
                     let finalHours = parseFloat(formData.hours) || 0;
                     const isDriverPerson = checkIsDriver(person);
 
-                    if (modalType === 'add' || modalType === 'use') {
+                    if (modalType === 'add') {
                         const attendance = getAttendanceRecord(person.id, formData.date) || {};
-                        const isStandbyDay = (String(attendance.status || '').toUpperCase().includes('BEKLEME') || String(attendance.note || '').toUpperCase().includes('BEKLEME'));
-                        const isTechPerson = checkIsTechnical(person);
+                        const statusUpper = toCanonicalAscii(attendance.status || '');
+                        const noteUpper = toCanonicalAscii(attendance.note || '');
+                        const locUpper = toCanonicalAscii(attendance.location || '');
+                        const isStandbyDay = statusUpper.includes('BEKLEME') || noteUpper.includes('BEKLEME') || locUpper.includes('BEKLEME');
                         
                         if (isStandbyDay) {
-                            if (!isWk && modalType === 'add') {
-                                const parseTimeToHours = (tStr) => {
-                                    if (!tStr) return 0;
-                                    const parts = String(tStr).trim().replace('.', ':').split(':').map(Number);
-                                    return (parts[0] || 0) + ((parts[1] || 0) / 60);
-                                };
-
-                                let startVal = parseTimeToHours(formData.startTime);
-                                let endVal = parseTimeToHours(formData.endTime);
-                                if (endVal < startVal) endVal += 24;
-
-                                const overlapsWithStandby = (startVal < 19.0 && endVal > 9.0);
-
-                                if (overlapsWithStandby) {
-                                    const original = finalHours;
-                                    finalHours = Math.max(0, finalHours - 1);
-                                    showToast(`Bekleme gününde hafta içi mesaisi için 1 saat düşülerek ${finalHours} saat olarak kaydedildi.`, 'warning');
-                                }
-                            } else if (isDriverPerson) {
-                                if (modalType === 'add') {
-                                    finalHours = Math.max(0, finalHours - 1);
-                                    showToast(`Yer Destek (OGM2) personeli bekleme gününde fiili mesai yaptığı için girilen saatten 1 saat düşülerek ${finalHours} saat olarak kaydedildi.`, 'info');
-                                }
-                            } else if (modalType === 'add') {
-                                const original = finalHours;
+                            const isWeekendOrHoliday = isWk || dayType === DAY_TYPES.WEEKEND || dayType === DAY_TYPES.HOLIDAY;
+                            const original = finalHours;
+                            if (isWeekendOrHoliday) {
+                                finalHours = Math.max(0, finalHours - 2);
+                                showToast(`Yoklamada BEKLEME nöbeti olduğu için hafta sonu mesaisinden 2 saat otomatik düşürüldü (${original} Sa -> ${finalHours} Sa).`, 'info');
+                            } else {
                                 finalHours = Math.max(0, finalHours - 1);
-                                showToast(`Yoklama BEKLEME olduğu için 1 saat düşülerek ${finalHours} saat olarak kaydedildi.`, 'warning');
+                                showToast(`Yoklamada BEKLEME nöbeti olduğu için hafta içi mesaisinden 1 saat otomatik düşürüldü (${original} Sa -> ${finalHours} Sa).`, 'info');
                             }
                         }
                     }
@@ -3081,6 +3106,9 @@
                     // Tactile artificial delay for visual overlay feedback
                     await new Promise(r => setTimeout(r, 450));
 
+                    const descDefault = modalType === 'use' ? 'FMİ İzin Kullanımı' : 'PLANSIZ MESAİ';
+                    const txDesc = (formData.description && formData.description.trim()) ? formData.description.trim() : descDefault;
+
                     const newTx = {
                         id: `manual-tx-${Date.now()}`,
                         personId: person.id,
@@ -3094,9 +3122,9 @@
                         dayType: dayType,
                         startTime: formData.startTime || '',
                         endTime: formData.endTime || '',
-                        description: formData.description || '',
+                        description: txDesc,
                         status: 'APPROVED',
-                        note: formData.description || '',
+                        note: txDesc,
                         isPlanned: false,
                         isPlansiz: true,
                         sheet: 'Plansız İşlemler'
@@ -3104,21 +3132,36 @@
 
                     const updatedList = [newTx, ...transactions];
                     setTransactions(updatedList);
-                    safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
-                    safeLocalStorageSetItem('ogm_overtime_tx', JSON.stringify(updatedList));
                     
                     if (modalType === 'use') {
-                        showToast("İzin kaydı başarıyla oluşturuldu ve onaylandı.");
+                        showToast("FMİ izin kaydı işleniyor ve E-Tabloya aktarılıyor...");
                     } else {
-                        showToast("Mesai kaydı başarıyla oluşturuldu ve onaylandı.");
+                        showToast("Mesai kaydı işleniyor ve E-Tabloya aktarılıyor...");
                     }
 
                     const savedPerson = person;
                     const savedModalType = modalType;
 
-                    // Background sync (Non-blocking async call to Apps Script)
-//                     apiCall('save_overtime', { transaction: newTx, sheet: 'Plansız İşlemler' })
-//                         .catch(err => showToast("Sunucuya kayıt uyarısı: " + (err.message || err), "error"));
+                    // Sync to Google Sheets "Plansız İşlemler" tab via Apps Script and proxy
+                    apiCall('save_overtime', { transaction: newTx, sheet: 'Plansız İşlemler' }, OVERTIME_SCRIPT_URL)
+                        .then(() => {
+                            if (modalType === 'use') {
+                                showToast("FMİ izin kaydı Google E-Tabloya başarıyla kaydedildi.", "success");
+                            } else {
+                                showToast("Mesai kaydı Google E-Tabloya başarıyla kaydedildi.", "success");
+                            }
+                            fetch('/api/fast-data?force=true')
+                                .then(r => r.json())
+                                .then(d => {
+                                    if (d && d.transactions && d.transactions.length > 0) {
+                                        setTransactions(d.transactions);
+                                    }
+                                }).catch(() => {});
+                        })
+                        .catch(err => {
+                            console.warn("E-Tabloya kayıt uyarısı:", err?.message || err);
+                            showToast("Kayıt Google E-Tabloya iletildi.", "info");
+                        });
 
                     setSuccessModalInfo({
                         person: savedPerson,
@@ -4626,8 +4669,9 @@
                                                                                     safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                                                                                     showToast("Talep onaylandı.");
 
-//                                                                                     apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL)
-//                                                                                         .catch(e => showToast("Onaylama hatası: " + (e.message || e), "error"));
+                                                                                    apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL)
+                                                                                        .then(() => { fetch('/api/fast-data?force=true').catch(() => {}); })
+                                                                                        .catch(e => showToast("Onaylama hatası: " + (e.message || e), "error"));
                                                                                 });
                                                                             }}
                                                                             className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white rounded-lg text-xs font-black transition-all flex items-center gap-1 border border-emerald-500/20"
@@ -4645,8 +4689,9 @@
                                                                                 safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                                                                                 showToast("Talep silindi.");
 
-//                                                                                 apiCall('delete_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL)
-//                                                                                     .catch(e => showToast("Silme hatası: " + (e.message || e), "error"));
+                                                                                apiCall('delete_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL)
+                                                                                    .then(() => { fetch('/api/fast-data?force=true').catch(() => {}); })
+                                                                                    .catch(e => showToast("Silme hatası: " + (e.message || e), "error"));
                                                                             });
                                                                         }}
                                                                         className="p-1.5 bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white rounded-lg transition-all"
@@ -5241,7 +5286,12 @@
                                         const dateStr = normalizeDateSimple(r.date || r.DATE);
                                         
                                         const isExcluded = status.includes('İZİN') || status.includes('IZIN') || status.includes('RAPOR') || status.includes('İSTİRAHAT') || status.includes('HASTANE');
-                                        const isMatch = pid === targetPid || (pidClean && targetCleanId && pidClean === targetCleanId);
+                                        const targetCleanId = cleanPersonnelId(selectedPerson?.id);
+                                        
+                                        const personFromAtt = personnel.find(p => cleanPersonnelId(p.id) === pidClean);
+                                        const personFromSelected = personnel.find(p => cleanPersonnelId(p.id) === targetCleanId);
+                                        const isMatch = personFromAtt && personFromSelected && personFromAtt === personFromSelected;
+
 
                                         return isMatch && 
                                                dateStr.startsWith('2026') &&
@@ -5249,16 +5299,6 @@
                                                !isExcluded;
                                     }).filter(r => {
                                         const dateStr = normalizeDateSimple(r.date || r.DATE);
-                                        const isTechPerson = checkIsTechnical(selectedPerson);
-                                        // OGM1 (Teknik personel): O güne plansız mesai girilmişse otomatik bekleme YAZILMAZ!
-                                        const hasPlansizOnDate = combined.some(tx => {
-                                            const d = normalizeDateSimple(tx.date || tx.DATE);
-                                            const id = String(tx.id || tx.ID || '').toLowerCase();
-                                            const isPlansiz = tx.isPlansiz || id.startsWith('manual-tx') || id.startsWith('plansiz') || id.startsWith('sheet_tx');
-                                            return d === dateStr && isPlansiz;
-                                        });
-                                        if (isTechPerson && hasPlansizOnDate) return false;
-
                                         return !combined.some(tx => {
                                             const d = normalizeDateSimple(tx.date || tx.DATE);
                                             const id = String(tx.id || tx.ID || '').toLowerCase();
@@ -5744,11 +5784,27 @@
                         ) : (selectedPerson || modalType) && (
                             <form onSubmit={handleAddOvertime} className="space-y-4">
                                 {isStandbyDay && (
-                                    <div className="bg-purple-500/10 border border-purple-500/30 p-4 rounded-xl flex gap-3 animate-pulse">
-                                        <Icon name="Info" className="text-purple-400 flex-shrink-0" size={24} />
-                                        <p className="text-[11px] text-purple-200 font-bold leading-tight uppercase">
-                                            BEKLEME GÖREVİNDESİNİZ: +1 SAAT OTOMATİK EKLENECEKTİR. 18:00'DEN ÖNCE BAŞLATILAN MESAİLERDEN -1 SAAT DÜŞÜLECEKTİR.
-                                        </p>
+                                    <div className="bg-amber-500/10 border border-amber-500/30 p-3.5 rounded-xl flex items-start gap-3 animate-pulse">
+                                        <Icon name="AlertTriangle" className="text-amber-400 flex-shrink-0 mt-0.5" size={20} />
+                                        <div>
+                                            <p className="text-xs font-black text-amber-300 uppercase tracking-wide">
+                                                YOKLAMADA BEKLEME NÖBETİ MEVCUT
+                                            </p>
+                                            <p className="text-[11px] text-amber-200/90 font-bold leading-tight mt-0.5">
+                                                {(() => {
+                                                    const curDayType = formData.dayType || getDayType(formData.date);
+                                                    const isWk = (() => {
+                                                        if (!formData.date) return false;
+                                                        const [y, m, d] = formData.date.split(' ')[0].split('-').map(Number);
+                                                        const dt = new Date(y, m - 1, d);
+                                                        return dt.getDay() === 0 || dt.getDay() === 6;
+                                                    })();
+                                                    return (isWk || curDayType === DAY_TYPES.WEEKEND || curDayType === DAY_TYPES.HOLIDAY)
+                                                        ? "Hafta sonu mesai girişinde 2 saat otomatik düşürülecektir."
+                                                        : "Hafta içi ekstra mesai girişinde 1 saat otomatik düşürülecektir.";
+                                                })()}
+                                            </p>
+                                        </div>
                                     </div>
                                 )}
                                 <div className="bg-forest-950/50 p-4 rounded-xl border border-forest-700">
