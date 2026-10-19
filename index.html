@@ -111,6 +111,10 @@
         const PERSONNEL_SCRIPT_URL = OVERTIME_SCRIPT_URL;
         const SYSTEM_ID = "0005536572913";
 
+        const FAST_CSV_TRANSACTIONS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT3MCU4qhFXt1MJtK_ypsaEj2ZtqgJ_HZKAJU3AIA25dd-qhcotXNc-1Ks3YBalsJt_AAC3OwAanYbR/pub?output=csv&gid=1412906013";
+        const FAST_CSV_PERSONNEL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=0";
+        const FAST_CSV_ATTENDANCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=1568664684";
+
         // --- HOLIDAY & CALCULATION CONFIG ---
         const TURKISH_HOLIDAYS = [
             '01-01', // Yılbaşı
@@ -1525,10 +1529,10 @@
                     let resMain = null;
                     let resPersonnel = null;
 
-                    // 1. Önce hızlı CSV endpoint'inden anında verileri almayı dene
+                    // 1. Önce hızlı CSV endpoint'inden anında verileri almayı dene (veya Netlify statik barındırma için doğrudan istemci tarafı CSV çekme)
                     try {
                         const fastUrl = `/api/fast-data${!silent ? '?force=true' : ''}`;
-                        const fastResp = await fetch(fastUrl, { signal: AbortSignal.timeout(12000) });
+                        const fastResp = await fetch(fastUrl, { signal: AbortSignal.timeout(8000) });
                         if (fastResp.ok) {
                             const fastJson = await fastResp.json();
                             if (fastJson && fastJson.success && (fastJson.personnel?.length > 0 || fastJson.transactions?.length > 0)) {
@@ -1539,8 +1543,109 @@
                                 };
                             }
                         }
-                    } catch (fastErr) {
-                        console.warn("Hızlı CSV servis uyarısı, Apps Script deneniyor:", fastErr);
+                    } catch (fastErr) {}
+
+                    // 1.5 Netlify / Statik barındırma fallback: Doğrudan Google Sheets CSV ve proxy'lerden çek
+                    if (!resMain || !resMain.personnel || resMain.personnel.length === 0) {
+                        try {
+                            const parseCSV = (text) => {
+                                if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+                                const lines = [];
+                                let row = [''];
+                                let inQuotes = false;
+                                for (let i = 0; i < text.length; i++) {
+                                    const c = text[i];
+                                    const next = text[i + 1];
+                                    if (c === '"') {
+                                        if (inQuotes && next === '"') {
+                                            row[row.length - 1] += '"';
+                                            i++;
+                                        } else {
+                                            inQuotes = !inQuotes;
+                                        }
+                                    } else if (c === ',' && !inQuotes) {
+                                        row.push('');
+                                    } else if ((c === '\r' || c === '\n') && !inQuotes) {
+                                        if (c === '\r' && next === '\n') i++;
+                                        lines.push(row);
+                                        row = [''];
+                                    } else {
+                                        row[row.length - 1] += c;
+                                    }
+                                }
+                                if (row.length > 1 || row[0] !== '') lines.push(row);
+                                return lines;
+                            };
+
+                            const rowsToObjects = (lines) => {
+                                if (lines.length < 2) return [];
+                                const headers = lines[0].map(h => h.replace(/^\uFEFF/, '').trim());
+                                const objs = [];
+                                for (let i = 1; i < lines.length; i++) {
+                                    const row = lines[i];
+                                    if (row.length === 1 && !row[0]) continue;
+                                    const obj = {};
+                                    for (let j = 0; j < headers.length; j++) {
+                                        const header = headers[j];
+                                        if (!header) continue;
+                                        let val = row[j] !== undefined ? row[j].trim() : '';
+                                        const hLower = header.toLowerCase();
+                                        if (hLower === 'hours' || hLower === 'days' || hLower === 'sure' || hLower === 'puan' || hLower === 'saat') {
+                                            val = val.replace(',', '.');
+                                        }
+                                        obj[header] = val;
+                                        const camel = header.charAt(0).toLowerCase() + header.slice(1);
+                                        if (!(camel in obj)) obj[camel] = val;
+                                        if (!(hLower in obj)) obj[hLower] = val;
+                                        const upper = header.toUpperCase();
+                                        if (!(upper in obj)) obj[upper] = val;
+                                    }
+                                    objs.push(obj);
+                                }
+                                return objs;
+                            };
+
+                            const fetchOne = async (url) => {
+                                try {
+                                    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+                                    if (res.ok) {
+                                        const text = await res.text();
+                                        return rowsToObjects(parseCSV(text));
+                                    }
+                                } catch (e) {}
+                                try {
+                                    const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10000) });
+                                    if (res.ok) {
+                                        const text = await res.text();
+                                        return rowsToObjects(parseCSV(text));
+                                    }
+                                } catch (e) {}
+                                try {
+                                    const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10000) });
+                                    if (res.ok) {
+                                        const text = await res.text();
+                                        return rowsToObjects(parseCSV(text));
+                                    }
+                                } catch (e) {}
+                                return [];
+                            };
+
+                            const [txs, pers, atts] = await Promise.all([
+                                fetchOne(FAST_CSV_TRANSACTIONS),
+                                fetchOne(FAST_CSV_PERSONNEL),
+                                fetchOne(FAST_CSV_ATTENDANCE)
+                            ]);
+
+                            if (txs.length > 0 || pers.length > 0) {
+                                resMain = {
+                                    transactions: txs,
+                                    personnel: pers,
+                                    attendance: atts
+                                };
+                            }
+                        } catch (clientCsvErr) {
+                            console.warn("Client CSV fetch warning:", clientCsvErr);
+                        }
                     }
 
                     // 2. Hızlı CSV'den veri gelmediyse Apps Script proxy ile çek
