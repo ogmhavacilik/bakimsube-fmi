@@ -16,6 +16,7 @@ function getSpreadsheet() {
 
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : "get_init_data";
+  var callback = (e && e.parameter && e.parameter.callback) ? e.parameter.callback : null;
   
   if (action === "get_init_data") {
     var output = {
@@ -26,11 +27,21 @@ function doGet(e) {
         transactions: getTransactions()
       }
     };
-    return ContentService.createTextOutput(JSON.stringify(output))
+    var jsonStr = JSON.stringify(output);
+    if (callback) {
+      return ContentService.createTextOutput(callback + "(" + jsonStr + ");")
+                           .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+    return ContentService.createTextOutput(jsonStr)
                          .setMimeType(ContentService.MimeType.JSON);
   }
   
-  return ContentService.createTextOutput("Sistem Aktif - Personel, Yoklama ve Plansız İşlemler Entegrasyonu Çalışıyor.");
+  var msg = "Sistem Aktif - Personel, Yoklama ve Plansız İşlemler Entegrasyonu Çalışıyor.";
+  if (callback) {
+    return ContentService.createTextOutput(callback + "(" + JSON.stringify({success: true, message: msg}) + ");")
+                         .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+  return ContentService.createTextOutput(msg);
 }
 
 function doPost(e) {
