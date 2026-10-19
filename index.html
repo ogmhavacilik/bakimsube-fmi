@@ -646,6 +646,16 @@
                 } catch (directGetErr) {
                     lastError = directGetErr;
                 }
+
+                // 2.5 JSONP fallback for Netlify static hosting where fetch might be blocked by CORS
+                try {
+                    const jsonpData = await fetchJsonp(targetUrl + (targetUrl.includes('?') ? '&' : '?') + 'action=' + encodeURIComponent(action), 25000);
+                    if (jsonpData) {
+                        return jsonpData;
+                    }
+                } catch (jsonpErr) {
+                    lastError = jsonpErr;
+                }
             }
 
             // 3. Try local server proxy (/api/proxy)
