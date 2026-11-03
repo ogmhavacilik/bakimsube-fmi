@@ -488,6 +488,40 @@
             return checkIsDriverOnly(p);
         };
 
+        const getOgm2026Hours = (dateStr, isWeekend) => {
+            if (!dateStr) return isWeekend ? 11 : 3;
+            const norm = formatDateLocal(dateStr);
+            if (!norm.startsWith('2026')) return isWeekend ? 11 : 3;
+            const timeVal = new Date(norm + 'T00:00:00').getTime();
+            const startPhase1 = new Date('2026-09-18T00:00:00').getTime();
+            const endPhase1 = new Date('2026-10-21T23:59:59').getTime();
+            const startPhase2 = new Date('2026-10-22T00:00:00').getTime();
+            const endYear = new Date('2026-12-31T23:59:59').getTime();
+
+            if (timeVal >= startPhase1 && timeVal <= endPhase1) {
+                return isWeekend ? 10 : 1;
+            } else if (timeVal >= startPhase2 && timeVal <= endYear) {
+                return isWeekend ? 8 : 0;
+            }
+            return isWeekend ? 11 : 3;
+        };
+
+        const calculateStandbyHours = (dateStr, isHolidayStandby, person) => {
+            const isWk = checkIsWeekend(dateStr);
+            const isDriverOnly = checkIsDriverOnly(person);
+            const isSpecialOneHourWeekend = (dateStr === '2026-07-04');
+
+            if (isHolidayStandby) {
+                return isDriverOnly ? 10.0 : 2.0;
+            } else {
+                if (isDriverOnly) {
+                    return (isWk && !isSpecialOneHourWeekend) ? 10.0 : 1.0;
+                } else {
+                    return (isWk && !isSpecialOneHourWeekend) ? 2.0 : 1.0;
+                }
+            }
+        };
+
         const checkIsStandbyInAttendance = (targetPid, targetDateStr, attRecords = []) => {
             if (!targetPid || !targetDateStr) return false;
             const pidNorm = cleanPersonnelId(targetPid);
@@ -2242,7 +2276,7 @@
                             personName: p?.fullName || pid,
                             date: dateStr,
                             type: TRANSACTION_TYPES.EARNED,
-                            hours: isStrictWeekend ? 11.0 : 3.0,
+                            hours: getOgm2026Hours(dateStr, isStrictWeekend),
                             description: 'OTOMATİK PLANLI GÖREV (YOKLAMA)',
                             status: 'APPROVED',
                             isAuto: true,
@@ -2430,8 +2464,9 @@
                             newTx.hours = hVal;
                         }
                     } else if (isPlannedDuty) {
-                         newTx.displayHours = isWk ? 11.0 : 3.0;
-                         newTx.hours = isWk ? 11.0 : 3.0;
+                          const hVal = getOgm2026Hours(newTx.date || dateLocal, isWk);
+                          newTx.displayHours = hVal;
+                          newTx.hours = hVal;
                     } else if (isAuto && newTx.displayHours === undefined && newTx.hours === undefined) {
                          if (desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ')) {
                              newTx.displayHours = 8.0;
@@ -2744,11 +2779,7 @@
                                     else if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
-                                        if (isDriverPerson) {
-                                            points = 10.0;
-                                        } else {
-                                            points = 2.0;
-                                        }
+                                        points = calculateStandbyHours(curStr, true, personObj);
                                     }
                                 } else if (isStandby) {
                                     // OGM1: Bir bekleme yazılmış bir kişi varsa ve plansız mesai girilirse o güne bekleme mesai otomatik 1 saat ya da 2 saat YAZILMAZ
@@ -2756,12 +2787,7 @@
                                     else if (processedDays.STANDBY.has(dayKey)) skip = true;
                                     else {
                                         processedDays.STANDBY.add(dayKey);
-                                        const isSpecialOneHourWeekend = (curStr === '2026-07-04');
-                                        if (isDriverPerson) {
-                                            points = (isWk && !isSpecialOneHourWeekend) ? 10.0 : 1.0;
-                                        } else {
-                                            points = isWk ? 2.0 : 1.0;
-                                        }
+                                        points = calculateStandbyHours(curStr, false, personObj);
                                     }
                                 } else if (isAnyDuty) {
                                  const dayType = tx.dayType || tx.DAYTYPE || getDayType(curStr);
@@ -3325,60 +3351,69 @@
 
                     worksheet.views = [{ showGridLines: true }];
 
-                    // 1. App Title Row
+                    // 0. Warning Notice Row (Row 1)
                     worksheet.mergeCells('A1:X1');
-                    const titleCell = worksheet.getCell('A1');
+                    const warnCell = worksheet.getCell('A1');
+                    warnCell.value = '2026 YILI KURAL BİLGİSİ: 18 Eylül 2026 öncesi standart 3-11 kuralı (Hafta içi 3 saat, Hafta sonu 11 saat) uygulanır; 18 Eylül - 21 Ekim 2026 arası Hafta içi 1 saat / Hafta sonu 10 saat ve 21 Ekim sonrası Hafta içi 0 saat / Hafta sonu 8 saat kuralları geçerlidir.';
+                    warnCell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: '900C3F' } };
+                    warnCell.alignment = { vertical: 'middle', horizontal: 'center' };
+                    warnCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FADBD8' } };
+                    worksheet.getRow(1).height = 25;
+
+                    // 1. App Title Row (Row 2)
+                    worksheet.mergeCells('A2:X2');
+                    const titleCell = worksheet.getCell('A2');
                     titleCell.value = 'BİRİM MESAİ SKORLARI VE DETAYLI DÖKÜMÜ (2026 YILI)';
                     titleCell.font = { name: 'Segoe UI', size: 14, bold: true, color: { argb: 'FFFFFF' } };
                     titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
                     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '194B2E' } };
-                    worksheet.getRow(1).height = 40;
+                    worksheet.getRow(2).height = 40;
 
-                    // 2. Metadata details
+                    // 2. Metadata details (Row 3)
                     const isOgm1 = adminRole === 'ogm1';
-                    const roleTitle = isOgm1 ? 'UÇAK TEKNİK EKİBİ MESAİ RAPORU' : 'YER DESTEK BİRİMİ MESAİ RAPORU';
-                    worksheet.mergeCells('A2:X2');
-                    const subCell = worksheet.getCell('A2');
+                    const roleTitle = isOgm1 ? 'UÇAK TEKNİK EKİbİ MESAİ RAPORU' : 'YER DESTEK BİRİMİ MESAİ RAPORU';
+                    worksheet.mergeCells('A3:X3');
+                    const subCell = worksheet.getCell('A3');
                     subCell.value = `${roleTitle} • Rapor Tarihi: ${new Date().toLocaleDateString('tr-TR')} ${new Date().toLocaleTimeString('tr-TR')}`;
                     subCell.font = { name: 'Segoe UI', size: 9.5, italic: true, bold: true, color: { argb: 'FFFFFF' } };
                     subCell.alignment = { vertical: 'middle', horizontal: 'center' };
                     subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '20723F' } };
-                    worksheet.getRow(2).height = 22;
+                    worksheet.getRow(3).height = 22;
 
-                    // 3. Multi-row Header Setup
-                    worksheet.getRow(3).height = 24;
+                    // 3. Multi-row Header Setup (Rows 4, 5, 6)
                     worksheet.getRow(4).height = 24;
-                    worksheet.getRow(5).height = 22;
+                    worksheet.getRow(5).height = 24;
+                    worksheet.getRow(6).height = 22;
 
-                    worksheet.mergeCells('A3:A5'); worksheet.getCell('A3').value = "NO";
-                    worksheet.mergeCells('B3:B5'); worksheet.getCell('B3').value = "PERSONEL BİLGİSİ";
-                    worksheet.mergeCells('C3:C5'); worksheet.getCell('C3').value = "DURUM (Bugün)";
+                    worksheet.mergeCells('A4:A6'); worksheet.getCell('A4').value = "NO";
+                    worksheet.mergeCells('B4:B6'); worksheet.getCell('B4').value = "PERSONEL BİLGİSİ";
+                    worksheet.mergeCells('C4:C6'); worksheet.getCell('C4').value = "DURUM (Bugün)";
 
-                    worksheet.mergeCells('D3:L3'); worksheet.getCell('D3').value = "PLANSIZ MESAİLER (PUANLI)";
-                    worksheet.mergeCells('D4:F4'); worksheet.getCell('D4').value = "HAFTA İÇİ";
-                    worksheet.getCell('D5').value = "GÜNDÜZ (G)"; worksheet.getCell('E5').value = "GECE (N)"; worksheet.getCell('F5').value = "PUAN (P)";
-                    worksheet.mergeCells('G4:I4'); worksheet.getCell('G4').value = "HAFTA SONU";
-                    worksheet.getCell('G5').value = "GÜNDÜZ (G)"; worksheet.getCell('H5').value = "GECE (N)"; worksheet.getCell('I5').value = "PUAN (P)";
-                    worksheet.mergeCells('J4:L4'); worksheet.getCell('J4').value = "RESMİ TATİL";
-                    worksheet.getCell('J5').value = "GÜNDÜZ (G)"; worksheet.getCell('K5').value = "GECE (N)"; worksheet.getCell('L5').value = "PUAN (P)";
+                    worksheet.mergeCells('D4:L4'); worksheet.getCell('D4').value = "PLANSIZ MESAİLER (PUANLI)";
+                    worksheet.mergeCells('D5:F5'); worksheet.getCell('D5').value = "HAFTA İÇİ";
+                    worksheet.getCell('D6').value = "GÜNDÜZ (G)"; worksheet.getCell('E6').value = "GECE (N)"; worksheet.getCell('F6').value = "PUAN (P)";
+                    worksheet.mergeCells('G5:I5'); worksheet.getCell('G5').value = "HAFTA SONU";
+                    worksheet.getCell('G6').value = "GÜNDÜZ (G)"; worksheet.getCell('H6').value = "GECE (N)"; worksheet.getCell('I6').value = "PUAN (P)";
+                    worksheet.mergeCells('J5:L5'); worksheet.getCell('J5').value = "RESMİ TATİL";
+                    worksheet.getCell('J6').value = "GÜNDÜZ (G)"; worksheet.getCell('K6').value = "GECE (N)"; worksheet.getCell('L6').value = "PUAN (P)";
 
-                    worksheet.mergeCells('M3:P3'); worksheet.getCell('M3').value = "PLANLI GÖREV MESAİSİ";
-                    worksheet.mergeCells('M4:N4'); worksheet.getCell('M4').value = "HAFTA İÇİ";
-                    worksheet.getCell('M5').value = "GÜN"; worksheet.getCell('N5').value = "SAAT";
-                    worksheet.mergeCells('O4:P4'); worksheet.getCell('O4').value = "HAFTA SONU";
-                    worksheet.getCell('O5').value = "GÜN"; worksheet.getCell('P5').value = "SAAT";
+                    worksheet.mergeCells('M4:P4'); worksheet.getCell('M4').value = "PLANLI GÖREV MESAİSİ";
+                    worksheet.mergeCells('M5:N5'); worksheet.getCell('M5').value = "HAFTA İÇİ";
+                    worksheet.getCell('M6').value = "GÜN"; worksheet.getCell('N6').value = "SAAT";
+                    worksheet.mergeCells('O5:P5'); worksheet.getCell('O5').value = "HAFTA SONU";
+                    worksheet.getCell('O6').value = "GÜN"; worksheet.getCell('P6').value = "SAAT";
 
-                    worksheet.mergeCells('Q3:U3'); worksheet.getCell('Q3').value = "BEKLEME PUANLARI";
-                    worksheet.mergeCells('Q4:R4'); worksheet.getCell('Q4').value = "NORMAL (1P)";
-                    worksheet.getCell('Q5').value = "GÜN"; worksheet.getCell('R5').value = "PUAN";
-                    worksheet.mergeCells('S4:T4'); worksheet.getCell('S4').value = "RESMİ (2P)";
-                    worksheet.getCell('S5').value = "GÜN"; worksheet.getCell('T5').value = "PUAN";
-                    worksheet.mergeCells('U4:U5'); worksheet.getCell('U4').value = "TOPLAM";
+                    worksheet.mergeCells('Q4:U4'); worksheet.getCell('Q4').value = "BEKLEME PUANLARI";
+                    worksheet.mergeCells('Q5:R5'); worksheet.getCell('Q5').value = "NORMAL (1P)";
+                    worksheet.getCell('Q6').value = "GÜN"; worksheet.getCell('R6').value = "PUAN";
+                    worksheet.mergeCells('S5:T5'); worksheet.getCell('S5').value = "RESMİ (2P)";
+                    worksheet.getCell('S6').value = "GÜN"; worksheet.getCell('T6').value = "PUAN";
+                    worksheet.mergeCells('U5:U6'); worksheet.getCell('U5').value = "TOPLAM";
 
-                    worksheet.mergeCells('V3:X3'); worksheet.getCell('V3').value = "MESAİ VE İZİN ÖZETİ";
-                    worksheet.mergeCells('V4:V5'); worksheet.getCell('V4').value = "HAKEDİŞ";
-                    worksheet.mergeCells('W4:W5'); worksheet.getCell('W4').value = "KULLANILAN";
-                    worksheet.mergeCells('X4:X5'); worksheet.getCell('X4').value = "NET BAKİYE";
+                    worksheet.mergeCells('V4:X4'); worksheet.getCell('V4').value = "MESAİ VE İZİN ÖZETİ";
+                    worksheet.mergeCells('V5:V6'); worksheet.getCell('V5').value = "HAKEDİŞ";
+                    worksheet.mergeCells('W5:W6'); worksheet.getCell('W5').value = "KULLANILAN";
+                    worksheet.mergeCells('X5:X6'); worksheet.getCell('X5').value = "NET BAKİYE";
 
                     const headerStyle = {
                         font: { name: 'Segoe UI', size: 9, bold: true, color: { argb: 'FFFFFF' } },
@@ -3403,12 +3438,12 @@
                         font: { name: 'Segoe UI', size: 9, bold: true, color: { argb: 'FBBF24' } }
                     };
 
-                    for (let r = 3; !(r > 5); r++) {
+                    for (let r = 4; !(r > 6); r++) {
                         const row = worksheet.getRow(r);
                         row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
                             if (colNumber >= 22) {
                                 cell.style = summaryHeaderStyle;
-                            } else if (r === 5 || colNumber >= 13) {
+                            } else if (r === 6 || colNumber >= 13) {
                                 cell.style = altHeaderStyle;
                             } else {
                                 cell.style = headerStyle;
@@ -3613,20 +3648,8 @@
                             hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.HOURS !== undefined ? tx.HOURS : (tx.displayHours || 0)));
                         } else if (!isAuto && (tx.hours !== undefined || tx.displayHours !== undefined)) {
                             hours = parseFloat(tx.hours !== undefined ? tx.hours : tx.displayHours);
-                        } else if (isDriverOnly && (isHolidayStandby || isStandby)) {
-                            const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
-                            if (isHolidayStandby) {
-                                hours = 10.0;
-                            } else if (isWk && !isSpecialOneHourWeekend) {
-                                hours = 10.0;
-                            } else {
-                                hours = 1.0;
-                            }
-                        } else if (isHolidayStandby) {
-                            hours = 2.0;
-                        } else if (isStandby) {
-                            const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
-                            hours = (isWk && !isSpecialOneHourWeekend) ? 2.0 : 1.0;
+                        } else if (isHolidayStandby || isStandby) {
+                            hours = calculateStandbyHours(tx.date, isHolidayStandby, person);
                         } else if (isAuto || isPlannedDuty || isFmi) {
                             if (isPlannedDuty) {
                                 hours = isWk ? 11.0 : 3.0;
@@ -3670,27 +3693,36 @@
                     const finalWkendP = calculatedWkendP > 0 ? calculatedWkendP : (totals.pWkend || 0);
                     const finalHolidP = calculatedHolidP > 0 ? calculatedHolidP : (totals.pHolid || 0);
 
-                    // 1. App Title Row
+                    // 0. Warning Notice Row (Row 1)
                     worksheet.mergeCells('A1:G1');
-                    const titleCell = worksheet.getCell('A1');
+                    const warnCell = worksheet.getCell('A1');
+                    warnCell.value = '2026 YILI KURAL BİLGİSİ: 18 Eylül 2026 öncesi standart 3-11 kuralı (Hafta içi 3 saat, Hafta sonu 11 saat) uygulanır; 18 Eylül - 21 Ekim 2026 arası Hafta içi 1 saat / Hafta sonu 10 saat ve 21 Ekim sonrası Hafta içi 0 saat / Hafta sonu 8 saat kuralları geçerlidir.';
+                    warnCell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: '900C3F' } };
+                    warnCell.alignment = { vertical: 'middle', horizontal: 'center' };
+                    warnCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FADBD8' } };
+                    worksheet.getRow(1).height = 25;
+
+                    // 1. App Title Row (Row 2)
+                    worksheet.mergeCells('A2:G2');
+                    const titleCell = worksheet.getCell('A2');
                     titleCell.value = 'BİREYSEL FAZLA MESAİ VE İZİN DETAYLI DÖKÜMÜ (2026)';
                     titleCell.font = { name: 'Segoe UI', size: 14, bold: true, color: { argb: 'FFFFFF' } };
                     titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
                     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '194B2E' } };
-                    worksheet.getRow(1).height = 42;
+                    worksheet.getRow(2).height = 42;
 
-                    // 2. Metadata details
-                    worksheet.mergeCells('A2:G2');
-                    const subCell = worksheet.getCell('A2');
+                    // 2. Metadata details (Row 3)
+                    worksheet.mergeCells('A3:G3');
+                    const subCell = worksheet.getCell('A3');
                     subCell.value = `PERSONEL: ${pName} (${pTitle}) • Rapor Tarihi: ${new Date().toLocaleDateString('tr-TR')} ${new Date().toLocaleTimeString('tr-TR')}`;
                     subCell.font = { name: 'Segoe UI', size: 10, italic: true, bold: true, color: { argb: 'FFFFFF' } };
                     subCell.alignment = { vertical: 'middle', horizontal: 'center' };
                     subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '20723F' } };
-                    worksheet.getRow(2).height = 24;
+                    worksheet.getRow(3).height = 24;
 
-                    // 3. Spacing row
+                    // 3. Spacing row (Row 4)
                     worksheet.addRow([]);
-                    worksheet.getRow(3).height = 15;
+                    worksheet.getRow(4).height = 15;
 
                     // 4. Summary Table Header
                     worksheet.mergeCells('A4:D4');
@@ -5572,28 +5604,57 @@
                                     const pHolid_modal = plansizItems.filter(tx => normalizeDayType(tx.dayType, tx.date) === DAY_TYPES.HOLIDAY).reduce((s, tx) => s + (parseFloat(tx.hours) || 0), 0);
                                     const totalPlansizPuan_modal = pWkday_modal + pWkend_modal + pHolid_modal;
 
-                                    // Use globally calculated stats to ensure detailed breakdown matches the summary table EXACTLY.
-                                    const pIdNorm = cleanPersonnelId(selectedPerson.id);
-                                    const pIdRaw = String(selectedPerson.id || '').trim().toLowerCase();
-                                    const targetStats = stats[pIdNorm] || stats[pIdRaw] || stats['p' + pIdNorm] || {
-                                        earned: 0,
-                                        used: 0,
-                                        balance: 0,
-                                        standbyDays: 0,
-                                        standby: 0,
-                                        holidayStandbyDays: 0,
-                                        holidayStandby: 0,
-                                        notesBreakdown: {}
-                                    };
+                                    // Calculate exact totals directly from allItems to guarantee 100% synchronization with the Excel export.
+                                    let modalEarned = 0;
+                                    let modalUsed = 0;
+                                    let modalNormalStandbyDays = 0;
+                                    let modalNormalStandby = 0;
+                                    let modalHolidayStandbyDays = 0;
+                                    let modalHolidayStandby = 0;
+                                    let totalPlansizPuanSum = 0;
+                                    let modalNotesBreakdown = {};
 
-                                    const modalEarned = targetStats.earned;
-                                    const modalUsed = targetStats.used;
-                                    const modalBalance = targetStats.balance;
-                                    const modalNormalStandbyDays = targetStats.standbyDays || 0;
-                                    const modalNormalStandby = targetStats.standby || 0;
-                                    const modalHolidayStandbyDays = targetStats.holidayStandbyDays || 0;
-                                    const modalHolidayStandby = targetStats.holidayStandby || 0;
-                                    const modalNotesBreakdown = targetStats.notesBreakdown || {};
+                                    allItems.forEach(tx => {
+                                        const txId = String(tx.id || tx.ID || '').toLowerCase();
+                                        const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
+                                        const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
+                                        const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
+                                        const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                                        const txType = tx.type || tx.TYPE || '';
+                                        const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
+                                        const hasBeklemeInText = !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
+                                        const isExplicitHolidayStandby = !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby'));
+                                        const isHolidayStandby = !isPlansiz && (tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
+                                        const isStandby = !isPlansiz && (tx.isStandby !== undefined ? tx.isStandby : (hasBeklemeInText && !isHolidayStandby));
+                                        const isFmi = !isPlansiz && (tx.isFmi !== undefined ? tx.isFmi : (descUpper.includes('FMİ') || descUpper.includes('FMI') || descUpper.includes('F.M.İ') || txId.includes('fmi') || tx.type === TRANSACTION_TYPES.USED));
+                                        
+                                        let hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.displayHours !== undefined ? tx.displayHours : (tx.type === TRANSACTION_TYPES.USED ? 8.0 : 0)));
+                                        
+                                        if (isPlansiz) {
+                                            hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.HOURS !== undefined ? tx.HOURS : (tx.displayHours || 0)));
+                                        } else if (!isAuto && (tx.hours !== undefined || tx.displayHours !== undefined)) {
+                                            hours = parseFloat(tx.hours !== undefined ? tx.hours : tx.displayHours);
+                                        } else if (isHolidayStandby || isStandby) {
+                                            hours = calculateStandbyHours(tx.date, isHolidayStandby, selectedPerson);
+                                        } else if (isAuto) {
+                                            // auto duty logic if needed
+                                        }
+
+                                        if (isHolidayStandby) {
+                                            modalHolidayStandbyDays++;
+                                            modalHolidayStandby += hours;
+                                            modalEarned += hours;
+                                        } else if (isStandby) {
+                                            modalNormalStandbyDays++;
+                                            modalNormalStandby += hours;
+                                            modalEarned += hours;
+                                        } else if (isFmi || tx.type === TRANSACTION_TYPES.USED) {
+                                            modalUsed += hours;
+                                        } else if (isPlansiz) {
+                                            modalEarned += hours;
+                                        }
+                                    });
+                                    const modalBalance = modalEarned - modalUsed;
 
                                     const pName = String(selectedPerson.fullName || '').toLocaleUpperCase('tr-TR');
                                     const pTitle = String(selectedPerson.title || '').toLocaleUpperCase('tr-TR');
@@ -5601,6 +5662,7 @@
                                     const isTech = ['UÇAK TEKNİKERİ', 'UÇAK TEKNİSYENİ'].some(t => pTitle.includes(t)) && !isSerkan;
                                     const isDriverPerson = checkIsDriver(selectedPerson);
 
+                                    const targetStats = stats[cleanPersonnelId(selectedPerson.id)] || stats[selectedPerson.id] || { earned: 0, used: 0, balance: 0, score: 0, standby: 0, breakdown: {} };
                                     const wkdayData = getBreakdownData(targetStats.breakdown, DAY_TYPES.WEEKDAY);
                                     const wkendData = getBreakdownData(targetStats.breakdown, DAY_TYPES.WEEKEND);
                                     const holidData = getBreakdownData(targetStats.breakdown, DAY_TYPES.HOLIDAY);
