@@ -2383,9 +2383,10 @@
 
                     let skipStandby = false;
                     if (isHolidayStandby) {
-                        if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
+                        if (hasPlansizOnThisDay) skipStandby = true;
+                        else if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
                     } else if (isStandby) {
-                        if (hasDutyOnThisDay && !isDriverOnly) skipStandby = true;
+                        if (hasPlansizOnThisDay || (hasDutyOnThisDay && !isDriverOnly)) skipStandby = true;
                     }
                     if (isAuto && (isStandby || isHolidayStandby) && skipStandby) return false;
 
@@ -2407,7 +2408,7 @@
                 }).map(tx => {
                     const newTx = { ...tx };
                     const txId = String(newTx.id || newTx.ID || '').toLowerCase();
-                    const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync');
+                    const isAuto = txId.startsWith('auto') || txId.includes('auto') || txId.includes('sync') || newTx.isAuto || newTx.isStandbySync || newTx.isGorevSync || newTx.isFmi;
                     const desc = String(newTx.description || newTx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                     
                     if (newTx.type === TRANSACTION_TYPES.USED) {
@@ -2606,7 +2607,7 @@
                     const txId = String(tx.id || tx.ID || '');
                     const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
 
-                    const isAuto = txId.toLowerCase().startsWith('auto-') || txId.toLowerCase().includes('sync');
+                    const isAuto = txId.toLowerCase().startsWith('auto') || txId.toLowerCase().includes('auto') || txId.toLowerCase().includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
                     const txType = tx.type || tx.TYPE || '';
                     const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.toLowerCase().startsWith('manual-tx') || txId.toLowerCase().startsWith('manual-override') || txId.toLowerCase().startsWith('plansiz') || txId.toLowerCase().startsWith('sheet_tx') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
 
@@ -2676,7 +2677,7 @@
                     }
                     if (map[pid]) {
                         const txId = String(tx.id || tx.ID || '');
-                        const isAuto = txId.startsWith('auto-') || txId.includes('sync');
+                        const isAuto = txId.toLowerCase().startsWith('auto') || txId.toLowerCase().includes('auto') || txId.toLowerCase().includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
                         const descCanon = toCanonicalAscii(tx.description || tx.DESCRIPTION || tx.aciklama || tx.ACIKLAMA || tx.gorev || tx.GOREV || '');
                         const descUpper = descCanon;
                         const txLoc = String(tx.location || tx.DUTY_LOC || tx.LOCATION || '').toLocaleUpperCase('tr-TR');
@@ -2805,12 +2806,11 @@
                                         if (processedDays.PLANNED_DUTY.has(dayKey)) skip = true;
                                         else {
                                             processedDays.PLANNED_DUTY.add(dayKey);
+                                            points = getOgm2026Hours(curStr, isWk);
                                             if (isWk) {
-                                                points = 11.0;
                                                 map[pid].plannedDutyWeekend.days += 1;
                                                 map[pid].plannedDutyWeekend.hours += points;
                                             } else {
-                                                points = 3.0; 
                                                 map[pid].plannedDutyWeekday.days += 1;
                                                 map[pid].plannedDutyWeekday.hours += points;
                                             }
@@ -3625,7 +3625,7 @@
                         const descUpper = String(tx.description || tx.DESCRIPTION || '').toLocaleUpperCase('tr-TR');
                         const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                         const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
-                        const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                        const isAuto = txId.startsWith('auto') || txId.includes('auto') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
                                             const txType = tx.type || tx.TYPE || '';
                                             const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                         const hasBeklemeInText = !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
@@ -3652,7 +3652,7 @@
                             hours = calculateStandbyHours(tx.date, isHolidayStandby, person);
                         } else if (isAuto || isPlannedDuty || isFmi) {
                             if (isPlannedDuty) {
-                                hours = isWk ? 11.0 : 3.0;
+                                hours = getOgm2026Hours(tx.date, isWk);
                             } else if (isFmi) {
                                 hours = 8.0;
                             }
@@ -3680,18 +3680,18 @@
                         }
                     });
 
-                    const finalEarned = calculatedEarned > 0 ? calculatedEarned : (totals.modalEarned || 0);
-                    const finalUsed = calculatedUsed > 0 ? calculatedUsed : (totals.modalUsed || 0);
+                    const finalEarned = (totals && totals.modalEarned !== undefined) ? totals.modalEarned : calculatedEarned;
+                    const finalUsed = (totals && totals.modalUsed !== undefined) ? totals.modalUsed : calculatedUsed;
                     const finalBalance = finalEarned - finalUsed;
-                    const finalNormalStandbyDays = calculatedNormalStandbyDays > 0 ? calculatedNormalStandbyDays : (totals.modalNormalStandbyDays || 0);
-                    const finalNormalStandby = calculatedNormalStandbyHours > 0 ? calculatedNormalStandbyHours : (totals.modalNormalStandby || 0);
-                    const finalHolidayStandbyDays = calculatedHolidayStandbyDays > 0 ? calculatedHolidayStandbyDays : (totals.modalHolidayStandbyDays || 0);
-                    const finalHolidayStandby = calculatedHolidayStandbyHours > 0 ? calculatedHolidayStandbyHours : (totals.modalHolidayStandby || 0);
+                    const finalNormalStandbyDays = (totals && totals.modalNormalStandbyDays !== undefined) ? totals.modalNormalStandbyDays : calculatedNormalStandbyDays;
+                    const finalNormalStandby = (totals && totals.modalNormalStandby !== undefined) ? totals.modalNormalStandby : calculatedNormalStandbyHours;
+                    const finalHolidayStandbyDays = (totals && totals.modalHolidayStandbyDays !== undefined) ? totals.modalHolidayStandbyDays : calculatedHolidayStandbyDays;
+                    const finalHolidayStandby = (totals && totals.modalHolidayStandby !== undefined) ? totals.modalHolidayStandby : calculatedHolidayStandbyHours;
                     const finalTotalStandby = finalNormalStandby + finalHolidayStandby;
-                    const finalPlansizPuan = calculatedPlansizPuan > 0 ? calculatedPlansizPuan : (totals.modalPlansizPuan || 0);
-                    const finalWkdayP = calculatedWkdayP > 0 ? calculatedWkdayP : (totals.pWkday || 0);
-                    const finalWkendP = calculatedWkendP > 0 ? calculatedWkendP : (totals.pWkend || 0);
-                    const finalHolidP = calculatedHolidP > 0 ? calculatedHolidP : (totals.pHolid || 0);
+                    const finalPlansizPuan = calculatedPlansizPuan > 0 ? calculatedPlansizPuan : ((totals && totals.modalPlansizPuan) || 0);
+                    const finalWkdayP = calculatedWkdayP > 0 ? calculatedWkdayP : ((totals && totals.pWkday) || 0);
+                    const finalWkendP = calculatedWkendP > 0 ? calculatedWkendP : ((totals && totals.pWkend) || 0);
+                    const finalHolidP = calculatedHolidP > 0 ? calculatedHolidP : ((totals && totals.pHolid) || 0);
 
                     // 0. Warning Notice Row (Row 1)
                     worksheet.mergeCells('A1:G1');
@@ -3948,25 +3948,13 @@
 
                          if (isPlansiz) {
                              hours = parseFloat(tx.hours !== undefined ? tx.hours : (tx.HOURS !== undefined ? tx.HOURS : (tx.displayHours || 0)));
-                         } else if (isDriverOnly && (isHolidayStandby || isStandby)) {
-                             const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
-                             if (isHolidayStandby) {
-                                 hours = 10.0;
-                             } else if (isWk && !isSpecialOneHourWeekend) {
-                                 hours = 10.0;
-                             } else {
-                                 hours = 1.0;
-                             }
+                         } else if (isHolidayStandby || isStandby) {
+                             hours = calculateStandbyHours(tx.date, isHolidayStandby, person);
                          } else if (!isAuto && (tx.hours !== undefined || tx.displayHours !== undefined)) {
                              hours = parseFloat(tx.hours !== undefined ? tx.hours : tx.displayHours);
-                         } else if (isHolidayStandby) {
-                             hours = 2.0;
-                         } else if (isStandby) {
-                             const isSpecialOneHourWeekend = (tx.date === '2026-07-04');
-                             hours = (isWk && !isSpecialOneHourWeekend) ? 2.0 : 1.0;
                          } else if (isAuto || isPlannedDuty || isFmi) {
                              if (isPlannedDuty) {
-                                 hours = isWk ? 11.0 : 3.0;
+                                 hours = getOgm2026Hours(tx.date, isWk);
                              } else if (isFmi) {
                                  hours = 8.0;
                              }
@@ -5313,7 +5301,7 @@
                                             const txNote = String(tx.note || tx.NOTE || '').toLocaleUpperCase('tr-TR');
                                             
                                             const txId = String(tx.id || tx.ID || '').toLowerCase();
-                                            const isAuto = txId.startsWith('auto-') || txId.includes('sync');
+                                            const isAuto = txId.startsWith('auto') || txId.includes('auto') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
                                             const txType = tx.type || tx.TYPE || '';
                                             const isPlansiz = txId.startsWith('manual-tx') || txId.startsWith('manual-override') || txId.startsWith('plansiz') || txId.startsWith('sheet_tx') || tx.isPlansiz === true || tx.IS_PLANSIZ === true || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                                             
@@ -5370,6 +5358,38 @@
                                         note: r.note || ''
                                     }));
 
+                                    const personPlansizDates = new Set();
+                                    const personDutyDates = new Set();
+
+                                    combined.forEach(tx => {
+                                        const d = normalizeDateSimple(tx.date || tx.DATE);
+                                        const txId = String(tx.id || tx.ID || '').toLowerCase();
+                                        const descUpper = toCanonicalAscii(tx.description || tx.DESCRIPTION || '');
+                                        const isAuto = txId.startsWith('auto') || txId.includes('auto') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                                        const txType = tx.type || tx.TYPE || '';
+                                        const isPlansiz = txId.startsWith('manual-tx') || txId.startsWith('manual-override') || txId.startsWith('plansiz') || txId.startsWith('sheet_tx') || tx.isPlansiz === true || tx.IS_PLANSIZ === true || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
+                                        if (isPlansiz) {
+                                            personPlansizDates.add(d);
+                                            personDutyDates.add(d);
+                                        } else {
+                                            const isStandbyTx = tx.isStandby || tx.isHolidayStandby || txId.includes('standby') || descUpper.includes('BEKLEME');
+                                            const isFmiTx = tx.isFmi || txType === TRANSACTION_TYPES.USED || descUpper.includes('FMI');
+                                            if (!isStandbyTx && !isFmiTx) {
+                                                personDutyDates.add(d);
+                                            }
+                                        }
+                                    });
+
+                                    attendanceRecords.forEach(r => {
+                                        const pidClean = cleanPersonnelId(r.personId || r.PERSON_ID);
+                                        if (pidClean !== targetCleanId) return;
+                                        const d = normalizeDateSimple(r.date || r.DATE);
+                                        const st = String(r.status || r.STATUS || '').toLocaleUpperCase('tr-TR');
+                                        if (st.includes('GÖREV') || st.includes('GOREV')) {
+                                            personDutyDates.add(d);
+                                        }
+                                    });
+
                                     const gorevSyncs = attendanceRecords.filter(r => {
                                         const pid = normalizeId(r.personId || r.PERSON_ID);
                                         const pidClean = cleanPersonnelId(r.personId || r.PERSON_ID);
@@ -5408,7 +5428,7 @@
                                             return dt.getDay() === 0 || dt.getDay() === 6;
                                         })();
                                         
-                                        const points = isInSeason ? (isWk ? 11 : 3) : 8; 
+                                        const points = isInSeason ? getOgm2026Hours(dateStr, isWk) : 8; 
 
                                         return {
                                             id: `gorev-auto-sync-${normalizeDateSimple(r.date || r.DATE)}`,
@@ -5439,6 +5459,9 @@
                                         const personFromSelected = personnel.find(p => cleanPersonnelId(p.id) === targetCleanId);
                                         const isMatch = personFromAtt && personFromSelected && personFromAtt === personFromSelected;
 
+                                        const isDriverOnly = checkIsDriverOnly(selectedPerson) || checkIsDriver(selectedPerson);
+                                        if (personPlansizDates.has(dateStr)) return false;
+                                        if (personDutyDates.has(dateStr) && !isDriverOnly) return false;
 
                                         return isMatch && 
                                                dateStr.startsWith('2026') &&
@@ -5461,48 +5484,12 @@
                                         const isWeeklyOrPublicHoliday = getDayType(dateStr) === DAY_TYPES.HOLIDAY;
                                         const isHoliday = descJoint.includes('RESMİ BEKLEME') || descJoint.includes('RESMI BEKLEME') || descJoint.includes('TATİL-BEKLEME') || descJoint.includes('TATIL-BEKLEME') || descJoint.includes('RESMİ TATİL BEKLEME') || descJoint.includes('RESMI TATIL BEKLEME') || descJoint.includes('RESMİ TATİL') || descJoint.includes('RESMI TATIL') || isWeeklyOrPublicHoliday;
                                         const isWk = checkIsWeekend(dateStr);
-                                        const isTechPerson = checkIsTechnical(selectedPerson);
                                         const isDriverOnly = checkIsDriverOnly(selectedPerson) || checkIsDriver(selectedPerson);
-                                        const isYerDestekPerson = checkIsYerDestek(selectedPerson);
 
-                                        let standbyHours = 1;
-                                        let descText = 'BEKLEME-ANKARA';
-
-                                        if (isDriverOnly) {
-                                            const isSpecialOneHourWeekend = (dateStr === '2026-07-04');
-                                            if (isHoliday) {
-                                                standbyHours = 10;
-                                                descText = 'RESMİ TATİL BEKLEME (10S)';
-                                            } else if (isWk && !isSpecialOneHourWeekend) {
-                                                standbyHours = 10;
-                                                descText = 'BEKLEME (HAFTA SONU 10S)';
-                                            } else {
-                                                standbyHours = 1;
-                                                descText = isSpecialOneHourWeekend ? 'BEKLEME (ÖZEL 1S)' : 'BEKLEME (HAFTA İÇİ 1S)';
-                                            }
-                                        } else if (isYerDestekPerson) {
-                                            if (isHoliday) {
-                                                standbyHours = 2;
-                                                descText = 'RESMİ TATİL BEKLEME (2S)';
-                                            } else if (isWk) {
-                                                standbyHours = 2;
-                                                descText = 'BEKLEME (HAFTA SONU 2S)';
-                                            } else {
-                                                standbyHours = 1;
-                                                descText = 'BEKLEME (HAFTA İÇİ 1S)';
-                                            }
-                                        } else {
-                                            if (isHoliday) {
-                                                standbyHours = 2;
-                                                descText = 'RESMİ TATİL BEKLEME-ANKARA';
-                                            } else if (isTechPerson && isWk) {
-                                                standbyHours = 2;
-                                                descText = 'BEKLEME-ANKARA (HAFTA SONU 2P)';
-                                            } else {
-                                                standbyHours = 1;
-                                                descText = 'BEKLEME-ANKARA';
-                                            }
-                                        }
+                                        const standbyHours = calculateStandbyHours(dateStr, isHoliday, selectedPerson);
+                                        const descText = isHoliday 
+                                            ? (isDriverOnly ? 'RESMİ TATİL BEKLEME (10S)' : 'RESMİ TATİL BEKLEME (2S)')
+                                            : (isWk ? (isDriverOnly ? 'BEKLEME (HAFTA SONU 10S)' : 'BEKLEME (HAFTA SONU 2S)') : (dateStr === '2026-07-04' ? 'BEKLEME (ÖZEL 1S)' : 'BEKLEME (HAFTA İÇİ 1S)'));
 
                                         return {
                                             id: `standby-auto-sync-${dateStr}`,
@@ -5514,7 +5501,19 @@
                                             isStandbySync: true, isHolidayStandby: isHoliday, isStandby: !isHoliday
                                         };
                                     });
-                                    const rawItems = [...combined, ...fmiDeductions, ...gorevSyncs, ...standbySyncs];
+                                    const rawItems = [...combined, ...fmiDeductions, ...gorevSyncs, ...standbySyncs].filter(item => {
+                                        const txId = String(item.id || item.ID || '').toLowerCase();
+                                        const isAuto = txId.startsWith('auto') || txId.includes('auto') || txId.includes('sync') || item.isStandbySync || item.isGorevSync || item.isFmi;
+                                        const descUpper = toCanonicalAscii(item.description || item.DESCRIPTION || item.aciklama || item.ACIKLAMA || item.gorev || item.GOREV || '');
+                                        const isStandby = item.isStandbySync || item.isStandby || item.isHolidayStandby || txId.includes('standby') || descUpper.includes('BEKLEME');
+                                        if (isAuto && isStandby) {
+                                            const d = normalizeDateSimple(item.date || item.DATE);
+                                            const isDriver = checkIsDriverOnly(selectedPerson) || checkIsDriver(selectedPerson);
+                                            if (personPlansizDates.has(d)) return false;
+                                            if (personDutyDates.has(d) && !isDriver) return false;
+                                        }
+                                        return true;
+                                    });
                                     
                                     // Priority deduplication per day and category
                                      const seen = new Map();
@@ -5528,7 +5527,7 @@
                                          const itemHours = item.hours !== undefined ? item.hours : (item.HOURS !== undefined ? item.HOURS : (item.displayHours !== undefined ? item.displayHours : 0));
                                          
                                           const isManualOverride = txId.startsWith('manual-override');
-                                          const isAuto = txId.startsWith('auto-') || txId.includes('sync') || item.isFmi || item.isGorevSync || item.isStandbySync;
+                                          const isAuto = txId.startsWith('auto') || txId.includes('auto') || txId.includes('sync') || item.isFmi || item.isGorevSync || item.isStandbySync;
                                          const isPlansiz = item.isPlansiz === true || item.IS_PLANSIZ === true || isPlansizTransaction(item) || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || txId.startsWith('sheet_tx') || txId.startsWith('plansiz') || descUpper.includes('PLANSIZ') || (!isAuto && (itemType === TRANSACTION_TYPES.EARNED || itemType === 'EARNED'));
                                          const hasBeklemeInText = !isPlansiz && (item.isStandbySync === true || item.isStandby === true || item.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
                                          const isExplicitHolidayStandby = !isPlansiz && (descUpper.includes('RESMİ BEKLEME') || descUpper.includes('RESMI BEKLEME') || descUpper.includes('TATİL-BEKLEME') || descUpper.includes('TATIL-BEKLEME') || descUpper.includes('RESMİ TATİL BEKLEME') || descUpper.includes('RESMI TATIL BEKLEME') || descUpper.includes('RESMİ TATİL') || descUpper.includes('RESMI TATIL') || txId.includes('hstandby') || txId.includes('holidaystandby'));
@@ -5776,7 +5775,19 @@
                                                         </div>
                                                     </div>
                                                     <button 
-                                                        onClick={() => exportIndividualExcel(selectedPerson, allItems, { modalEarned, modalNormalStandbyDays, modalNormalStandby, modalHolidayStandbyDays, modalHolidayStandby, modalUsed, modalBalance, modalPlansizPuan: totalPlansizPuan, pWkday, pWkend, pHolid })}
+                                                        onClick={() => exportIndividualExcel(selectedPerson, allItems, { 
+                                                            modalEarned: targetStats.earned || modalEarned, 
+                                                            modalNormalStandbyDays: targetStats.standbyDays !== undefined ? targetStats.standbyDays : modalNormalStandbyDays, 
+                                                            modalNormalStandby: targetStats.standby !== undefined ? targetStats.standby : modalNormalStandby, 
+                                                            modalHolidayStandbyDays: targetStats.holidayStandbyDays !== undefined ? targetStats.holidayStandbyDays : modalHolidayStandbyDays, 
+                                                            modalHolidayStandby: targetStats.holidayStandby !== undefined ? targetStats.holidayStandby : modalHolidayStandby, 
+                                                            modalUsed: targetStats.used || modalUsed, 
+                                                            modalBalance: targetStats.balance || modalBalance, 
+                                                            modalPlansizPuan: totalPlansizPuan, 
+                                                            pWkday, 
+                                                            pWkend, 
+                                                            pHolid 
+                                                        })}
                                                         type="button"
                                                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-2xs sm:text-xs font-bold transition-all flex items-center gap-1.5 shadow-md hover:scale-[1.02] cursor-pointer"
                                                         title="Tasarımı Bozmadan Bu Personelin Detaylı Dökümünü Excel (.xlsx) İndir"
@@ -5801,7 +5812,7 @@
                                             const dayType = getDayType(tx.date) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(tx.date));
                                             const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
                                             
-                                            const isAuto = txId.startsWith('auto-') || txId.includes('auto-') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
+                                            const isAuto = txId.startsWith('auto') || txId.includes('auto') || txId.includes('sync') || tx.isAuto || tx.isStandbySync || tx.isGorevSync || tx.isFmi;
                                 const txType = tx.type || tx.TYPE || '';
                                 const isPlansiz = tx.isPlansiz === true || tx.IS_PLANSIZ === true || txId.startsWith('manual-tx') || txId.startsWith('manual-override') || descUpper.includes('PLANSIZ') || (!isAuto && (txType === TRANSACTION_TYPES.EARNED || txType === 'EARNED'));
                                             const hasBeklemeInText = !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || txId.includes('standby') || txId.includes('hstandby') || txId.includes('bekleme') || descUpper.includes('BEKLEME')) && !descUpper.includes('UÇUŞ') && !descUpper.includes('UCUS') && !descUpper.includes('BAKIM');
