@@ -1,53 +1,5 @@
 [
   {
-    "id": "milat-DESTEKMEMUR-1",
-    "oturum": "ogm2",
-    "unvan": "DESTEK MEMUR",
-    "milatBaslangic": "2026-05-01",
-    "milatBitis": "2026-09-17",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 3,
-    "gorevHaftaSonu": 11,
-    "gorevResmiTatil": 11,
-    "durum": "KAPALI",
-    "aciklama": "18 Eylül 2026 öncesi standart 3-11 dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-DESTEKMEMUR-2",
-    "oturum": "ogm2",
-    "unvan": "DESTEK MEMUR",
-    "milatBaslangic": "2026-09-18",
-    "milatBitis": "2026-10-21",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 1,
-    "gorevHaftaSonu": 10,
-    "gorevResmiTatil": 10,
-    "durum": "KAPALI",
-    "aciklama": "18 Eylül - 21 Ekim 2026 OGM dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-DESTEKMEMUR-3",
-    "oturum": "ogm2",
-    "unvan": "DESTEK MEMUR",
-    "milatBaslangic": "2026-10-22",
-    "milatBitis": "",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 0,
-    "gorevHaftaSonu": 8,
-    "gorevResmiTatil": 8,
-    "durum": "AKTİF",
-    "aciklama": "22 Ekim 2026 sonrası güncel dönem",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
     "id": "milat-DESTEKMEMURSOFOR-1",
     "oturum": "ogm2",
     "unvan": "DESTEK MEMUR(ŞÖFÖR)",
@@ -58,10 +10,10 @@
     "beklemeResmiTatil": 10,
     "gorevHaftaIci": 3,
     "gorevHaftaSonu": 11,
-    "gorevResmiTatil": 11,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül 2026 öncesi standart 3-11 dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-DESTEKMEMURSOFOR-2",
@@ -70,30 +22,46 @@
     "milatBaslangic": "2026-09-18",
     "milatBitis": "2026-10-21",
     "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 10,
-    "beklemeResmiTatil": 10,
+    "beklemeHaftaSonu": 8,
+    "beklemeResmiTatil": 8,
     "gorevHaftaIci": 1,
     "gorevHaftaSonu": 10,
-    "gorevResmiTatil": 10,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül - 21 Ekim 2026 OGM dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-DESTEKMEMURSOFOR-3",
     "oturum": "ogm2",
     "unvan": "DESTEK MEMUR(ŞÖFÖR)",
     "milatBaslangic": "2026-10-22",
-    "milatBitis": "",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 10,
-    "beklemeResmiTatil": 10,
+    "milatBitis": "2026-11-08",
+    "beklemeHaftaIci": 0,
+    "beklemeHaftaSonu": 8,
+    "beklemeResmiTatil": 8,
     "gorevHaftaIci": 0,
     "gorevHaftaSonu": 8,
-    "gorevResmiTatil": 8,
+    "gorevResmiTatil": "",
+    "durum": "KAPALI",
+    "aciklama": "22 Ekim 2026 - 8 kasım sonrası  dönem",
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
+  },
+  {
+    "id": "milat-DESTEKMEMURSOFOR-3",
+    "oturum": "ogm2",
+    "unvan": "DESTEK MEMUR(ŞÖFÖR)",
+    "milatBaslangic": "2026-11-09",
+    "milatBitis": "",
+    "beklemeHaftaIci": 0,
+    "beklemeHaftaSonu": 2,
+    "beklemeResmiTatil": 8,
+    "gorevHaftaIci": 0,
+    "gorevHaftaSonu": 8,
+    "gorevResmiTatil": "",
     "durum": "AKTİF",
-    "aciklama": "22 Ekim 2026 sonrası güncel dönem",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "aciklama": "9 kasım sonrası güncel dönem",
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-DESTEKMEMURU-1",
@@ -106,10 +74,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 3,
     "gorevHaftaSonu": 11,
-    "gorevResmiTatil": 11,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül 2026 öncesi standart 3-11 dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-DESTEKMEMURU-2",
@@ -122,10 +90,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 1,
     "gorevHaftaSonu": 10,
-    "gorevResmiTatil": 10,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül - 21 Ekim 2026 OGM dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-DESTEKMEMURU-3",
@@ -138,106 +106,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 0,
     "gorevHaftaSonu": 8,
-    "gorevResmiTatil": 8,
+    "gorevResmiTatil": "",
     "durum": "AKTİF",
     "aciklama": "22 Ekim 2026 sonrası güncel dönem",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-ISCI-1",
-    "oturum": "ogm2",
-    "unvan": "İŞÇİ",
-    "milatBaslangic": "2026-05-01",
-    "milatBitis": "2026-09-17",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 3,
-    "gorevHaftaSonu": 11,
-    "gorevResmiTatil": 11,
-    "durum": "KAPALI",
-    "aciklama": "18 Eylül 2026 öncesi standart 3-11 dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-ISCI-2",
-    "oturum": "ogm2",
-    "unvan": "İŞÇİ",
-    "milatBaslangic": "2026-09-18",
-    "milatBitis": "2026-10-21",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 1,
-    "gorevHaftaSonu": 10,
-    "gorevResmiTatil": 10,
-    "durum": "KAPALI",
-    "aciklama": "18 Eylül - 21 Ekim 2026 OGM dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-ISCI-3",
-    "oturum": "ogm2",
-    "unvan": "İŞÇİ",
-    "milatBaslangic": "2026-10-22",
-    "milatBitis": "",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 0,
-    "gorevHaftaSonu": 8,
-    "gorevResmiTatil": 8,
-    "durum": "AKTİF",
-    "aciklama": "22 Ekim 2026 sonrası güncel dönem",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-MUHENDIS-1",
-    "oturum": "ogm1",
-    "unvan": "MÜHENDİS",
-    "milatBaslangic": "2026-05-01",
-    "milatBitis": "2026-09-17",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 3,
-    "gorevHaftaSonu": 11,
-    "gorevResmiTatil": 11,
-    "durum": "KAPALI",
-    "aciklama": "18 Eylül 2026 öncesi standart 3-11 dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-MUHENDIS-2",
-    "oturum": "ogm1",
-    "unvan": "MÜHENDİS",
-    "milatBaslangic": "2026-09-18",
-    "milatBitis": "2026-10-21",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 1,
-    "gorevHaftaSonu": 10,
-    "gorevResmiTatil": 10,
-    "durum": "KAPALI",
-    "aciklama": "18 Eylül - 21 Ekim 2026 OGM dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
-  },
-  {
-    "id": "milat-MUHENDIS-3",
-    "oturum": "ogm1",
-    "unvan": "MÜHENDİS",
-    "milatBaslangic": "2026-10-22",
-    "milatBitis": "",
-    "beklemeHaftaIci": 1,
-    "beklemeHaftaSonu": 2,
-    "beklemeResmiTatil": 2,
-    "gorevHaftaIci": 0,
-    "gorevHaftaSonu": 8,
-    "gorevResmiTatil": 8,
-    "durum": "AKTİF",
-    "aciklama": "22 Ekim 2026 sonrası güncel dönem",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-UCAKTEKNIKERI-1",
@@ -250,10 +122,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 3,
     "gorevHaftaSonu": 11,
-    "gorevResmiTatil": 11,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül 2026 öncesi standart 3-11 dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-UCAKTEKNIKERI-2",
@@ -266,10 +138,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 1,
     "gorevHaftaSonu": 10,
-    "gorevResmiTatil": 10,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül - 21 Ekim 2026 OGM dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-UCAKTEKNIKERI-3",
@@ -282,10 +154,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 0,
     "gorevHaftaSonu": 8,
-    "gorevResmiTatil": 8,
+    "gorevResmiTatil": "",
     "durum": "AKTİF",
     "aciklama": "22 Ekim 2026 sonrası güncel dönem",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-UCAKTEKNISYENI-1",
@@ -298,10 +170,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 3,
     "gorevHaftaSonu": 11,
-    "gorevResmiTatil": 11,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül 2026 öncesi standart 3-11 dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-UCAKTEKNISYENI-2",
@@ -314,10 +186,10 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 1,
     "gorevHaftaSonu": 10,
-    "gorevResmiTatil": 10,
+    "gorevResmiTatil": "",
     "durum": "KAPALI",
     "aciklama": "18 Eylül - 21 Ekim 2026 OGM dönemi",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   },
   {
     "id": "milat-UCAKTEKNISYENI-3",
@@ -330,9 +202,9 @@
     "beklemeResmiTatil": 2,
     "gorevHaftaIci": 0,
     "gorevHaftaSonu": 8,
-    "gorevResmiTatil": 8,
+    "gorevResmiTatil": "",
     "durum": "AKTİF",
     "aciklama": "22 Ekim 2026 sonrası güncel dönem",
-    "guncellemeTarihi": "2026-11-17T06:36:10.764Z"
+    "guncellemeTarihi": "Tue Nov 17 2026 10:29:02 GMT+0300 (Türkiye Standard Time)"
   }
 ]

@@ -526,9 +526,9 @@ function getDefaultMilatlarSeedRows() {
     var bHol = info.isDriver ? 10 : 2;
     var slug = keys[k].replace(/[^A-Z0-9]/g, "").slice(0, 18);
 
-    rows.push(["milat-" + slug + "-1", info.oturum, info.unvan, "2026-05-01", "2026-09-17", 1, bWkend, bHol, 3, 11, 11, "KAPALI", "18 Eylül 2026 öncesi standart 3-11 dönemi", nowTs]);
-    rows.push(["milat-" + slug + "-2", info.oturum, info.unvan, "2026-09-18", "2026-10-21", 1, bWkend, bHol, 1, 10, 10, "KAPALI", "18 Eylül - 21 Ekim 2026 OGM dönemi", nowTs]);
-    rows.push(["milat-" + slug + "-3", info.oturum, info.unvan, "2026-10-22", "", 1, bWkend, bHol, 0, 8, 8, "AKTİF", "22 Ekim 2026 sonrası güncel dönem", nowTs]);
+    rows.push(["milat-" + slug + "-1", info.oturum, info.unvan, "2026-05-01", "2026-09-17", 1, bWkend, bHol, 3, 11, "", "KAPALI", "18 Eylül 2026 öncesi standart 3-11 dönemi", nowTs]);
+    rows.push(["milat-" + slug + "-2", info.oturum, info.unvan, "2026-09-18", "2026-10-21", 1, bWkend, bHol, 1, 10, "", "KAPALI", "18 Eylül - 21 Ekim 2026 OGM dönemi", nowTs]);
+    rows.push(["milat-" + slug + "-3", info.oturum, info.unvan, "2026-10-22", "", 1, bWkend, bHol, 0, 8, "", "AKTİF", "22 Ekim 2026 sonrası güncel dönem", nowTs]);
   }
   return rows;
 }
@@ -579,7 +579,7 @@ function ensureMilatlarSheetOnce(customRows) {
         Number(m.beklemeResmiTatil !== undefined ? m.beklemeResmiTatil : 2),
         Number(m.gorevHaftaIci !== undefined ? m.gorevHaftaIci : 0),
         Number(m.gorevHaftaSonu !== undefined ? m.gorevHaftaSonu : 8),
-        Number(m.gorevResmiTatil !== undefined ? m.gorevResmiTatil : 8),
+        (m.gorevResmiTatil !== undefined && m.gorevResmiTatil !== null && m.gorevResmiTatil !== "") ? Number(m.gorevResmiTatil) : "",
         m.durum || (normalizeYmd(m.milatBitis) ? "KAPALI" : "AKTİF"),
         m.aciklama || "",
         m.guncellemeTarihi || nowTs
@@ -638,7 +638,7 @@ function getMilatlar() {
       beklemeResmiTatil: Number(raw.Bekleme_ResmiTatil !== undefined && raw.Bekleme_ResmiTatil !== "" ? raw.Bekleme_ResmiTatil : 2),
       gorevHaftaIci: Number(raw.Gorev_HaftaIci !== undefined && raw.Gorev_HaftaIci !== "" ? raw.Gorev_HaftaIci : 0),
       gorevHaftaSonu: Number(raw.Gorev_HaftaSonu !== undefined && raw.Gorev_HaftaSonu !== "" ? raw.Gorev_HaftaSonu : 8),
-      gorevResmiTatil: Number(raw.Gorev_ResmiTatil !== undefined && raw.Gorev_ResmiTatil !== "" ? raw.Gorev_ResmiTatil : 8),
+      gorevResmiTatil: (raw.Gorev_ResmiTatil !== undefined && raw.Gorev_ResmiTatil !== null && raw.Gorev_ResmiTatil !== "") ? Number(raw.Gorev_ResmiTatil) : "",
       durum: durum,
       aciklama: String(raw.Aciklama || raw["Açıklama"] || raw.aciklama || ""),
       guncellemeTarihi: String(raw.Guncelleme_Tarihi || raw.guncellemeTarihi || "")
@@ -660,7 +660,7 @@ function milatToRowArray(m, nowTs) {
     Number(m.beklemeResmiTatil !== undefined ? m.beklemeResmiTatil : 2),
     Number(m.gorevHaftaIci !== undefined ? m.gorevHaftaIci : 0),
     Number(m.gorevHaftaSonu !== undefined ? m.gorevHaftaSonu : 8),
-    Number(m.gorevResmiTatil !== undefined ? m.gorevResmiTatil : 8),
+    (m.gorevResmiTatil !== undefined && m.gorevResmiTatil !== null && m.gorevResmiTatil !== "") ? Number(m.gorevResmiTatil) : "",
     m.durum || (bitis ? "KAPALI" : "AKTİF"),
     String(m.aciklama || ""),
     String(m.guncellemeTarihi || nowTs)
@@ -708,7 +708,7 @@ function saveMilatlar(body) {
       beklemeResmiTatil: Number(incoming.beklemeResmiTatil !== undefined ? incoming.beklemeResmiTatil : 2),
       gorevHaftaIci: Number(incoming.gorevHaftaIci !== undefined ? incoming.gorevHaftaIci : 0),
       gorevHaftaSonu: Number(incoming.gorevHaftaSonu !== undefined ? incoming.gorevHaftaSonu : 8),
-      gorevResmiTatil: Number(incoming.gorevResmiTatil !== undefined ? incoming.gorevResmiTatil : 8),
+      gorevResmiTatil: (incoming.gorevResmiTatil !== undefined && incoming.gorevResmiTatil !== null && incoming.gorevResmiTatil !== "") ? Number(incoming.gorevResmiTatil) : "",
       durum: incomingEnd ? "KAPALI" : (incoming.durum || "AKTİF"),
       aciklama: incoming.aciklama || "",
       guncellemeTarihi: nowTs

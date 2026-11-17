@@ -111,7 +111,7 @@ const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw0MGJqlIm2
 const PERSONNEL_SCRIPT_URL = OVERTIME_SCRIPT_URL;
 const SYSTEM_ID = "0005536572913";
 
-const FAST_CSV_TRANSACTIONS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT3MCU4qhFXt1MJtK_ypsaEj2ZtqgJ_HZKAJU3AIA25dd-qhcotXNc-1Ks3YBalsJt_AAC3OwAanYbR/pub?output=csv&gid=1412906013";
+const FAST_CSV_TRANSACTIONS = "https://script.google.com/macros/s/AKfycbxBpJ98Vvl7WWvVpIfQHMrqlEkCouBjnj2dm6id3OpiKdLpnfLmHQUob_zW1PeZqElAPg/exec";
 const FAST_CSV_PERSONNEL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=0";
 const FAST_CSV_ATTENDANCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=1568664684";
 
@@ -501,7 +501,7 @@ const getMilatBaselineForPerson = (person) => {
     beklemeResmiTatil: bWkend,
     gorevHaftaIci: 3,
     gorevHaftaSonu: 11,
-    gorevResmiTatil: 11
+    gorevResmiTatil: ''
   };
 };
 
@@ -538,6 +538,156 @@ const findActiveMilatForPersonAndDate = (person, dateStr, milatlarList = null) =
   return { __closedAfterLastMilat: true };
 };
 
+const LEGACY_MILAT_DESCS = new Set([
+  '18 Eylül 2026 öncesi standart 3-11 dönemi',
+  '18 Eylül - 21 Ekim 2026 OGM dönemi',
+  '22 Ekim 2026 sonrası güncel dönem'
+]);
+
+const sanitizeMilatlarList = (list) => (Array.isArray(list) ? list : []).map(m => {
+  if (!m) return m;
+  const idStr = String(m.id || '');
+  const hasRawHol = m.gorevResmiTatil !== '' && m.gorevResmiTatil !== null && m.gorevResmiTatil !== undefined;
+  const isLegacy = hasRawHol &&
+    /^milat-[A-Z0-9]+-[123]$/.test(idStr) &&
+    Number(m.gorevResmiTatil) === Number(m.gorevHaftaSonu) &&
+    [11, 10, 8].includes(Number(m.gorevResmiTatil)) &&
+    (LEGACY_MILAT_DESCS.has(String(m.aciklama || '')) || String(m.guncellemeTarihi || '').includes('10:29:02'));
+  return isLegacy ? { ...m, gorevResmiTatil: '' } : m;
+});
+
+const sortMilatlarClient = (list) => [...(list || [])].sort((a, b) => {
+  const ua = toCanonicalAscii(a?.unvan || '');
+  const ub = toCanonicalAscii(b?.unvan || '');
+  if (ua !== ub) return ua.localeCompare(ub, 'tr');
+  return String(a?.milatBaslangic || '').localeCompare(String(b?.milatBaslangic || ''));
+});
+
+const prevDayYmdClient = (dateStr) => {
+  const norm = formatDateLocal(dateStr);
+  const parts = norm.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return '';
+  const dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] - 1));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+};
+
+const buildDefaultMilatlarClient = (persList = [], groupFilter = null) => {
+  const titleMap = new Map();
+  const addTitle = (rawTitle, rawUnit = '') => {
+    const t = String(rawTitle || '').trim();
+    if (!t) return;
+    const norm = toCanonicalAscii(t);
+    const uNorm = toCanonicalAscii(rawUnit);
+    if (['BELL-429', 'BELL 429', 'B-360', 'B360', 'T-70', 'T70', 'C-650', 'C650', 'AT-802', 'AT802'].some(p => norm.includes(p))) return;
+    const isDriver = ['SOFOR', 'SURUCU'].some(k => norm.includes(k) || uNorm.includes(k));
+    const isYerDestek = isDriver || ['DESTEK', 'ISCI', 'HIZMETLI'].some(k => norm.includes(k) || uNorm.includes(k));
+    const oturum = groupFilter || (isYerDestek ? 'ogm2' : 'ogm1');
+    if (!titleMap.has(norm)) titleMap.set(norm, { unvan: t, oturum, isDriver });
+  };
+  if (!groupFilter || groupFilter === 'ogm1') {
+    addTitle('UÇAK TEKNİKERİ', 'TEKNİK');
+    addTitle('UÇAK TEKNİSYENİ', 'TEKNİK');
+  }
+  if (!groupFilter || groupFilter === 'ogm2') {
+    addTitle('DESTEK MEMUR(ŞÖFÖR)', 'YER DESTEK');
+    addTitle('DESTEK MEMURU', 'YER DESTEK');
+  }
+  (persList || []).forEach(p => addTitle(p.title || p.TITLE || p.UNVAN || '', p.unit || p.BIRIM || ''));
+
+  const nowTs = new Date().toISOString();
+  const rows = [];
+  for (const [normKey, info] of titleMap.entries()) {
+    const bWk = info.isDriver ? 10 : 2;
+    const slug = normKey.replace(/[^A-Z0-9]/g, '').slice(0, 18);
+    rows.push(
+      { id: `milat-${slug}-1`, oturum: info.oturum, unvan: info.unvan, milatBaslangic: '2026-05-01', milatBitis: '2026-09-17', beklemeHaftaIci: 1, beklemeHaftaSonu: bWk, beklemeResmiTatil: bWk, gorevHaftaIci: 3, gorevHaftaSonu: 11, gorevResmiTatil: '', durum: 'KAPALI', aciklama: '18 Eylül 2026 öncesi standart 3-11 dönemi', guncellemeTarihi: nowTs },
+      { id: `milat-${slug}-2`, oturum: info.oturum, unvan: info.unvan, milatBaslangic: '2026-09-18', milatBitis: '2026-10-21', beklemeHaftaIci: 1, beklemeHaftaSonu: bWk, beklemeResmiTatil: bWk, gorevHaftaIci: 1, gorevHaftaSonu: 10, gorevResmiTatil: '', durum: 'KAPALI', aciklama: '18 Eylül - 21 Ekim 2026 OGM dönemi', guncellemeTarihi: nowTs },
+      { id: `milat-${slug}-3`, oturum: info.oturum, unvan: info.unvan, milatBaslangic: '2026-10-22', milatBitis: '', beklemeHaftaIci: 1, beklemeHaftaSonu: bWk, beklemeResmiTatil: bWk, gorevHaftaIci: 0, gorevHaftaSonu: 8, gorevResmiTatil: '', durum: 'AKTİF', aciklama: '22 Ekim 2026 sonrası güncel dönem', guncellemeTarihi: nowTs }
+    );
+  }
+  return sortMilatlarClient(rows);
+};
+
+const tryFetchLocalJson = async (url, options = {}) => {
+  const resp = await fetch(url, options);
+  const text = await resp.text();
+  if (!text || text.trim().startsWith('<')) {
+    throw new Error('LOCAL_API_HTML_FALLBACK');
+  }
+  const json = JSON.parse(text);
+  return { resp, json };
+};
+
+const fetchMilatlarDirectFromGas = async (targetUrl = OVERTIME_SCRIPT_URL) => {
+  const sep = targetUrl.includes('?') ? '&' : '?';
+  const gasUrl = `${targetUrl}${sep}action=get_milatlar&_t=${Date.now()}`;
+  try {
+    const r = await fetch(gasUrl, { method: 'GET', cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(15000) });
+    if (r.ok) {
+      const txt = await r.text();
+      if (txt && !txt.trim().startsWith('<')) {
+        const j = JSON.parse(txt);
+        if (j && j.milatlarSupported && Array.isArray(j.milatlar)) {
+          return { gasSynced: true, milatlar: sanitizeMilatlarList(sortMilatlarClient(j.milatlar)) };
+        }
+      }
+    }
+  } catch (e) {}
+  try {
+    const j = await fetchJsonp(`${targetUrl}${sep}action=get_milatlar`, 15000);
+    if (j && j.milatlarSupported && Array.isArray(j.milatlar)) {
+      return { gasSynced: true, milatlar: sanitizeMilatlarList(sortMilatlarClient(j.milatlar)) };
+    }
+  } catch (e) {}
+  return { gasSynced: false, milatlar: null };
+};
+
+const postMilatActionToGas = async (bodyObj, targetUrl = OVERTIME_SCRIPT_URL) => {
+  try {
+    const r = await fetch(targetUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(bodyObj),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(18000)
+    });
+    if (r.ok) {
+      const txt = await r.text();
+      if (txt && !txt.trim().startsWith('<')) {
+        const j = JSON.parse(txt);
+        if (j && j.success) {
+          return {
+            ok: true,
+            gasSynced: Boolean(j.milatlarSupported || Array.isArray(j.milatlar)),
+            milatlar: Array.isArray(j.milatlar) ? sanitizeMilatlarList(sortMilatlarClient(j.milatlar)) : null
+          };
+        }
+      }
+    }
+  } catch (e) {}
+  try {
+    const iframeName = 'gas_milat_frame_' + Date.now();
+    const iframe = document.createElement('iframe');
+    iframe.name = iframeName;
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    const form = document.createElement('form');
+    form.target = iframeName;
+    form.action = targetUrl;
+    form.method = 'POST';
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'postData';
+    input.value = JSON.stringify(bodyObj);
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    setTimeout(() => { try { form.remove(); iframe.remove(); } catch (e) {} }, 1500);
+    return { ok: true, gasSynced: true, milatlar: null };
+  } catch (e) {}
+  return { ok: false, gasSynced: false, milatlar: null };
+};
+
 const getOgm2026Hours = (dateStr, isWeekend, person = null, milatlarList = null) => {
   if (!dateStr) return isWeekend ? 11 : 3;
   const norm = formatDateLocal(dateStr);
@@ -549,7 +699,14 @@ const getOgm2026Hours = (dateStr, isWeekend, person = null, milatlarList = null)
       return 0;
     }
     if (!matchedMilat.__beforeFirstMilat) {
-      if (isHoliday) return Number(matchedMilat.gorevResmiTatil ?? matchedMilat.gorevHaftaSonu ?? 0);
+      const hasRawHoliday = matchedMilat.gorevResmiTatil !== '' && matchedMilat.gorevResmiTatil !== null && matchedMilat.gorevResmiTatil !== undefined;
+      const isLegacySeedResmiTatil =
+        hasRawHoliday &&
+        /^milat-[A-Z0-9]+-[123]$/.test(String(matchedMilat.id || '')) &&
+        Number(matchedMilat.gorevResmiTatil) === Number(matchedMilat.gorevHaftaSonu) &&
+        [11, 10, 8].includes(Number(matchedMilat.gorevResmiTatil)) &&
+        (['18 Eylül 2026 öncesi standart 3-11 dönemi', '18 Eylül - 21 Ekim 2026 OGM dönemi', '22 Ekim 2026 sonrası güncel dönem'].includes(String(matchedMilat.aciklama || '')) || String(matchedMilat.guncellemeTarihi || '').includes('10:29:02'));
+      if (isHoliday && hasRawHoliday && !isLegacySeedResmiTatil) return Number(matchedMilat.gorevResmiTatil);
       if (isWeekend) return Number(matchedMilat.gorevHaftaSonu ?? 0);
       return Number(matchedMilat.gorevHaftaIci ?? 0);
     }
@@ -834,18 +991,6 @@ const apiCall = async (action, payload = {}, targetUrl = OVERTIME_SCRIPT_URL) =>
     }
   }
 
-  if (action === 'get_init_data') {
-    try {
-      const staticRes = await fetch('/cached_init_data.json').catch(() => null);
-      if (staticRes && staticRes.ok) {
-        const staticJson = await staticRes.json().catch(() => null);
-        if (staticJson && staticJson.data) {
-          return staticJson.data;
-        }
-      }
-    } catch (e) {}
-  }
-
   const errName = lastError && lastError.name;
   const errStr = String(lastError?.message || lastError || '');
   if (errName === 'AbortError' || errName === 'TimeoutError' || errStr.includes('timeout') || errStr.includes('zaman aşımı') || errStr.includes('aborted')) {
@@ -1054,7 +1199,7 @@ const App = () => {
     beklemeResmiTatil: 2,
     gorevHaftaIci: 0,
     gorevHaftaSonu: 8,
-    gorevResmiTatil: 8,
+    gorevResmiTatil: '',
     aciklama: ''
   });
   const [editingMilatId, setEditingMilatId] = useState(null);
@@ -1670,38 +1815,53 @@ const App = () => {
       let resMain = null;
       let resPersonnel = null;
 
-      // 1. Önce hızlı CSV endpoint'inden anında verileri almayı dene (veya Netlify statik barındırma için doğrudan istemci tarafı CSV çekme)
+      // 1. Önce hızlı CSV endpoint'inden her seferinde canlı verileri al (önbelleksiz)
       try {
-        const fastUrl = `/api/fast-data${!silent ? '?force=true' : ''}`;
-        const fastResp = await fetch(fastUrl, { signal: AbortSignal.timeout(8000) });
-        if (fastResp.ok) {
-          const fastJson = await fastResp.json();
-          if (fastJson && fastJson.success && (fastJson.personnel?.length > 0 || fastJson.transactions?.length > 0)) {
-            resMain = {
-              personnel: fastJson.personnel || [],
-              transactions: fastJson.transactions || [],
-              attendance: fastJson.attendance || [],
-              milatlar: fastJson.milatlar || []
-            };
-          }
+        const fastUrl = `/api/fast-data?force=true&_t=${Date.now()}`;
+        const { resp: fastResp, json: fastJson } = await tryFetchLocalJson(fastUrl, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache' },
+          signal: AbortSignal.timeout(25000)
+        });
+        if (fastResp.ok && fastJson && fastJson.success && (fastJson.personnel?.length > 0 || fastJson.transactions?.length > 0)) {
+          resMain = {
+            personnel: fastJson.personnel || [],
+            transactions: fastJson.transactions || [],
+            attendance: fastJson.attendance || [],
+            milatlar: fastJson.milatlar || []
+          };
         }
       } catch (fastErr) {}
 
-      // Milatlar verisini senkronize et (sunucudan veya GAS'tan)
+      // Milatlar verisini senkronize et (sunucudan veya Netlify'da doğrudan Google E-Tablo GAS üzerinden)
+      let milatLoaded = false;
       try {
-        const mResp = await fetch(`/api/milatlar?targetUrl=${encodeURIComponent(OVERTIME_SCRIPT_URL)}`, { signal: AbortSignal.timeout(8000) });
-        if (mResp.ok) {
-          const mJson = await mResp.json();
-          if (mJson && Array.isArray(mJson.milatlar)) {
-            window.__OGM_MILATLAR__ = mJson.milatlar;
-            setMilatlar(mJson.milatlar);
-            setMilatGasSynced(Boolean(mJson.gasSynced));
-          }
+        const { resp: mResp, json: mJson } = await tryFetchLocalJson(`/api/milatlar?targetUrl=${encodeURIComponent(OVERTIME_SCRIPT_URL)}&_t=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache' },
+          signal: AbortSignal.timeout(12000)
+        });
+        if (mResp.ok && mJson && Array.isArray(mJson.milatlar)) {
+          const cleanM = sanitizeMilatlarList(mJson.milatlar);
+          window.__OGM_MILATLAR__ = cleanM;
+          setMilatlar(cleanM);
+          setMilatGasSynced(Boolean(mJson.gasSynced));
+          milatLoaded = cleanM.length > 0;
         }
-      } catch (mErr) {
-        if (resMain?.milatlar && Array.isArray(resMain.milatlar)) {
-          window.__OGM_MILATLAR__ = resMain.milatlar;
-          setMilatlar(resMain.milatlar);
+      } catch (mErr) {}
+
+      if (!milatLoaded) {
+        const gasRes = await fetchMilatlarDirectFromGas(OVERTIME_SCRIPT_URL).catch(() => ({ gasSynced: false, milatlar: null }));
+        if (gasRes && Array.isArray(gasRes.milatlar) && gasRes.milatlar.length > 0) {
+          window.__OGM_MILATLAR__ = gasRes.milatlar;
+          setMilatlar(gasRes.milatlar);
+          setMilatGasSynced(Boolean(gasRes.gasSynced));
+          milatLoaded = true;
+        } else if (resMain?.milatlar && Array.isArray(resMain.milatlar) && resMain.milatlar.length > 0) {
+          const cleanM = sanitizeMilatlarList(resMain.milatlar);
+          window.__OGM_MILATLAR__ = cleanM;
+          setMilatlar(cleanM);
+          milatLoaded = true;
         }
       }
 
@@ -1766,22 +1926,23 @@ const App = () => {
           };
 
           const fetchOne = async (url) => {
+            const bustUrl = `${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`;
             try {
-              const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+              const res = await fetch(bustUrl, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
               if (res.ok) {
                 const text = await res.text();
                 return rowsToObjects(parseCSV(text));
               }
             } catch (e) {}
             try {
-              const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10000) });
+              const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(bustUrl)}`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
               if (res.ok) {
                 const text = await res.text();
                 return rowsToObjects(parseCSV(text));
               }
             } catch (e) {}
             try {
-              const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(10000) });
+              const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(bustUrl)}`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
               if (res.ok) {
                 const text = await res.text();
                 return rowsToObjects(parseCSV(text));
@@ -1939,8 +2100,13 @@ const App = () => {
         });
         setPersonnel(formattedPL);
         if (resMain?.milatlar && Array.isArray(resMain.milatlar) && resMain.milatlar.length > 0 && (!window.__OGM_MILATLAR__ || window.__OGM_MILATLAR__.length === 0)) {
-          window.__OGM_MILATLAR__ = resMain.milatlar;
-          setMilatlar(resMain.milatlar);
+          const cleanM = sanitizeMilatlarList(resMain.milatlar);
+          window.__OGM_MILATLAR__ = cleanM;
+          setMilatlar(cleanM);
+        } else if (!window.__OGM_MILATLAR__ || window.__OGM_MILATLAR__.length === 0) {
+          const fallbackDefaults = buildDefaultMilatlarClient(formattedPL);
+          window.__OGM_MILATLAR__ = fallbackDefaults;
+          setMilatlar(fallbackDefaults);
         }
       }
 
@@ -2480,20 +2646,20 @@ const App = () => {
       const hasAutoFmi = autoFmiSet.has(`${pid}_${dateLocal}`);
       const isTxPlannedDuty = id.includes('auto_duty') || 
         id.includes('auto-duty') ||
-        desc.includes('OTOMATİK GÖREV') || 
-        desc.includes('PLANLI GÖREV') || 
-        desc.includes('GÖREV MESAİSİ');
+        desc.includes('OTOMATIK GOREV') || 
+        desc.includes('PLANLI GOREV') || 
+        desc.includes('GOREV MESAISI');
       if (isAuto && tx.type === TRANSACTION_TYPES.EARNED && hasAutoFmi && !isTxPlannedDuty) return false;
 
       const dayType = getDayType(dateLocal) === DAY_TYPES.HOLIDAY ? DAY_TYPES.HOLIDAY : (tx.dayType || getDayType(dateLocal));
       const isHolidayDate = dayType === DAY_TYPES.HOLIDAY;
 
       const hasBeklemeInText = !isPlansiz && (tx.isStandbySync === true || tx.isStandby === true || tx.isHolidayStandby === true || id.includes('standby') || id.includes('hstandby') || id.includes('bekleme') || desc.includes('BEKLEME')) && !desc.includes('UÇUŞ') && !desc.includes('UCUS') && !desc.includes('BAKIM');
-      const isExplicitHolidayStandby = !isPlansiz && (desc.includes('RESMİ BEKLEME') || desc.includes('RESMI BEKLEME') || desc.includes('TATİL-BEKLEME') || desc.includes('TATIL-BEKLEME') || desc.includes('RESMİ TATİL BEKLEME') || desc.includes('RESMI TATIL BEKLEME') || desc.includes('RESMİ TATİL') || desc.includes('RESMI TATIL') || id.includes('hstandby') || id.includes('holidaystandby'));
+      const isExplicitHolidayStandby = !isPlansiz && (desc.includes('RESMI BEKLEME') || desc.includes('TATIL-BEKLEME') || desc.includes('RESMI TATIL BEKLEME') || desc.includes('RESMI TATIL') || id.includes('hstandby') || id.includes('holidaystandby'));
 
       const isHolidayStandby = !isPlansiz && (tx.isHolidayStandby !== undefined ? tx.isHolidayStandby : (hasBeklemeInText && (isHolidayDate || isExplicitHolidayStandby)));
       const isStandby = !isPlansiz && (tx.isStandby !== undefined ? tx.isStandby : (hasBeklemeInText && !isHolidayStandby));
-      const isPlannedDuty = !isPlansiz && !hasBeklemeInText && !desc.includes('PLANSIZ') && !desc.includes('MESAİ') && !desc.includes('MESAI') && (id.includes('auto_duty') || id.includes('auto-duty') || desc.includes('OTOMATİK GÖREV') || desc.includes('PLANLI GÖREV') || desc.includes('PLANLI GOREV') || tx.isPlanned === true);
+      const isPlannedDuty = !isPlansiz && !hasBeklemeInText && !desc.includes('PLANSIZ') && !desc.includes('MESAI') && (id.includes('auto_duty') || id.includes('auto-duty') || desc.includes('OTOMATIK GOREV') || desc.includes('PLANLI GOREV') || tx.isPlanned === true);
       const isFmiUsage = !isPlansiz && (tx.type === TRANSACTION_TYPES.USED || desc.includes('FMİ') || desc.includes('FMI') || desc.includes('F.M.İ'));
 
       const personObj = getPerson(pid);
@@ -3175,15 +3341,13 @@ const App = () => {
 
           const updatedList = transactions.map(t => t.id === selectedPendingTx.id ? { ...updatedTx, status: 'APPROVED' } : t);
           setTransactions(updatedList);
-          safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
-          safeLocalStorageSetItem('ogm_overtime_tx', JSON.stringify(updatedList));
 
           showToast("Talep incelendi, onaylandı ve sisteme işlendi.");
 
           // Background sync
           apiCall('approve_overtime', { id: selectedPendingTx.id, transaction: updatedTx }, OVERTIME_SCRIPT_URL)
             .then(() => {
-              fetch('/api/fast-data?force=true').catch(() => {});
+              fetch(`/api/fast-data?force=true&_t=${Date.now()}`, { cache: 'no-store' }).catch(() => {});
             })
             .catch(err => console.warn("Sunucu onaylama uyarısı (yerel onay başarılı):", err?.message || err));
         } catch (err) {
@@ -3412,7 +3576,7 @@ const App = () => {
           } else {
             showToast("Mesai kaydı Google E-Tabloya başarıyla kaydedildi.", "success");
           }
-          fetch('/api/fast-data?force=true')
+          fetch(`/api/fast-data?force=true&_t=${Date.now()}`, { cache: 'no-store' })
             .then(r => r.json())
             .then(d => {
               if (d && d.transactions && d.transactions.length > 0) {
@@ -3452,7 +3616,6 @@ const App = () => {
     showConfirm('Bu mesai kaydını silmek istediğinize emin misiniz?', async () => {
       const updatedList = transactions.filter(t => t.id !== id);
       setTransactions(updatedList);
-      safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
       showToast("Kayıt listeden silindi.");
 
 //                     apiCall('delete_overtime', { id })
@@ -4440,7 +4603,6 @@ const App = () => {
 
     const updatedList = transactions.map(t => t.id === id ? { ...t, status: 'APPROVED' } : t);
     setTransactions(updatedList);
-    safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
     showToast("İşlem onaylandı.");
 
 //                 apiCall('approve_overtime', { id, transaction: tx })
@@ -4450,7 +4612,6 @@ const App = () => {
   const rejectTransaction = async (id) => {
     const updatedList = transactions.filter(t => t.id !== id);
     setTransactions(updatedList);
-    safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
     showToast("Talep silindi.");
 
 //                 apiCall('delete_overtime', { id })
@@ -4623,14 +4784,14 @@ const App = () => {
         beklemeResmiTatil: Number(activeMilat.beklemeResmiTatil ?? base.beklemeResmiTatil),
         gorevHaftaIci: Number(activeMilat.gorevHaftaIci ?? getOgm2026Hours(todayStr, false, item.samplePerson, [])),
         gorevHaftaSonu: Number(activeMilat.gorevHaftaSonu ?? getOgm2026Hours(todayStr, true, item.samplePerson, [])),
-        gorevResmiTatil: Number(activeMilat.gorevResmiTatil ?? getOgm2026Hours(todayStr, true, item.samplePerson, []))
+        gorevResmiTatil: (activeMilat.gorevResmiTatil !== '' && activeMilat.gorevResmiTatil !== null && activeMilat.gorevResmiTatil !== undefined) ? Number(activeMilat.gorevResmiTatil) : ''
       } : {
         beklemeHaftaIci: calculateStandbyHours(todayStr, false, item.samplePerson, []),
         beklemeHaftaSonu: calculateStandbyHours('2026-07-05', false, item.samplePerson, []),
         beklemeResmiTatil: calculateStandbyHours(todayStr, true, item.samplePerson, []),
         gorevHaftaIci: getOgm2026Hours(todayStr, false, item.samplePerson, []),
         gorevHaftaSonu: getOgm2026Hours(todayStr, true, item.samplePerson, []),
-        gorevResmiTatil: getOgm2026Hours(todayStr, true, item.samplePerson, [])
+        gorevResmiTatil: ''
       };
 
       return {
@@ -4703,31 +4864,81 @@ const App = () => {
           beklemeResmiTatil: Number(milatForm.beklemeResmiTatil) || 0,
           gorevHaftaIci: Number(milatForm.gorevHaftaIci) || 0,
           gorevHaftaSonu: Number(milatForm.gorevHaftaSonu) || 0,
-          gorevResmiTatil: Number(milatForm.gorevResmiTatil) || 0,
+          gorevResmiTatil: (milatForm.gorevResmiTatil !== '' && milatForm.gorevResmiTatil !== null && milatForm.gorevResmiTatil !== undefined) ? Number(milatForm.gorevResmiTatil) : '',
           aciklama: milatForm.aciklama || ''
         }
       };
-      const res = await fetch('/api/milatlar/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.success) {
-        throw new Error(data?.error || 'Milat kaydedilemedi.');
+      let resultData = null;
+      try {
+        const { resp: res, json: data } = await tryFetchLocalJson('/api/milatlar/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok || !data?.success) {
+          throw new Error(data?.error || 'Milat kaydedilemedi.');
+        }
+        resultData = data;
+      } catch (localErr) {
+        // Netlify / statik barındırma fallback: Doğrudan Google Apps Script'e kaydet
+        const recordId = editingMilatId || `milat-${Date.now()}`;
+        const nowTs = new Date().toISOString();
+        const incomingStart = formatDateLocal(milatForm.milatBaslangic);
+        const incomingEnd = milatForm.milatBitis ? formatDateLocal(milatForm.milatBitis) : '';
+        const newRec = {
+          ...payload.milat,
+          id: recordId,
+          milatBaslangic: incomingStart,
+          milatBitis: incomingEnd,
+          durum: incomingEnd ? 'KAPALI' : 'AKTİF',
+          guncellemeTarihi: nowTs
+        };
+        let nextList = [...(milatlar || [])];
+        if (autoClosePrevMilat && incomingStart) {
+          const closeDate = prevDayYmdClient(incomingStart);
+          const unvanNorm = toCanonicalAscii(selectedUnvan);
+          nextList = nextList.map(item => {
+            if (String(item.id) !== String(recordId) && toCanonicalAscii(item.unvan) === unvanNorm) {
+              if (item.milatBaslangic && item.milatBaslangic < incomingStart && (!item.milatBitis || item.milatBitis >= incomingStart)) {
+                return { ...item, milatBitis: closeDate, durum: 'KAPALI', guncellemeTarihi: nowTs };
+              }
+            }
+            return item;
+          });
+        }
+        const idx = nextList.findIndex(x => String(x.id) === String(recordId));
+        if (idx >= 0) nextList[idx] = newRec;
+        else nextList.push(newRec);
+        nextList = sanitizeMilatlarList(sortMilatlarClient(nextList));
+
+        const gasRes = await postMilatActionToGas({
+          action: 'save_milat',
+          autoClosePrevious: autoClosePrevMilat,
+          milat: newRec
+        }, OVERTIME_SCRIPT_URL);
+        if (!gasRes.ok) {
+          throw new Error(localErr?.message === 'LOCAL_API_HTML_FALLBACK' ? 'Google E-Tablo bağlantısı kurulamadı.' : (localErr?.message || 'Milat kaydedilemedi.'));
+        }
+        resultData = {
+          success: true,
+          gasSynced: gasRes.gasSynced,
+          milatlar: (gasRes.milatlar && gasRes.milatlar.length > 0) ? gasRes.milatlar : nextList
+        };
       }
-      if (Array.isArray(data.milatlar)) {
-        window.__OGM_MILATLAR__ = data.milatlar;
-        setMilatlar(data.milatlar);
+
+      if (Array.isArray(resultData.milatlar)) {
+        const cleanM = sanitizeMilatlarList(resultData.milatlar);
+        window.__OGM_MILATLAR__ = cleanM;
+        setMilatlar(cleanM);
       }
-      setMilatGasSynced(!!data.gasSynced);
+      setMilatGasSynced(!!resultData.gasSynced);
       const wasEdit = !!editingMilatId;
       setEditingMilatId(null);
       setMilatForm(prev => ({ ...prev, milatBitis: '', aciklama: '' }));
       showToast(
         wasEdit
-          ? `${selectedUnvan} milat kaydı güncellendi${data.gasSynced ? ' (Google E-Tablo "milatlar" eşitlendi).' : ' ("milatlar" sayfasına kaydedildi).'}`
-          : `${selectedUnvan} için ${formatDate(milatForm.milatBaslangic)} miladı kaydedildi${data.gasSynced ? ' ve Google E-Tablo "milatlar" sayfasına işlendi.' : '.'}`
+          ? `${selectedUnvan} milat kaydı güncellendi${resultData.gasSynced ? ' (Google E-Tablo "milatlar" eşitlendi).' : ' ("milatlar" sayfasına kaydedildi).'}`
+          : `${selectedUnvan} için ${formatDate(milatForm.milatBaslangic)} miladı kaydedildi${resultData.gasSynced ? ' ve Google E-Tablo "milatlar" sayfasına işlendi.' : '.'}`
       );
     } catch (err) {
       showToast("Milat kayıt hatası: " + (err.message || err), "error");
@@ -4748,7 +4959,7 @@ const App = () => {
       beklemeResmiTatil: Number(m.beklemeResmiTatil ?? 2),
       gorevHaftaIci: Number(m.gorevHaftaIci ?? 0),
       gorevHaftaSonu: Number(m.gorevHaftaSonu ?? 8),
-      gorevResmiTatil: Number(m.gorevResmiTatil ?? 8),
+      gorevResmiTatil: (m.gorevResmiTatil !== '' && m.gorevResmiTatil !== null && m.gorevResmiTatil !== undefined) ? Number(m.gorevResmiTatil) : '',
       aciklama: m.aciklama || ''
     });
   };
@@ -4765,7 +4976,7 @@ const App = () => {
       beklemeResmiTatil: c ? c.beklemeResmiTatil : 2,
       gorevHaftaIci: c ? c.gorevHaftaIci : 0,
       gorevHaftaSonu: c ? c.gorevHaftaSonu : 8,
-      gorevResmiTatil: c ? c.gorevResmiTatil : 8,
+      gorevResmiTatil: (c && c.gorevResmiTatil !== '' && c.gorevResmiTatil !== null && c.gorevResmiTatil !== undefined) ? c.gorevResmiTatil : '',
       aciklama: ''
     });
   };
@@ -4778,20 +4989,43 @@ const App = () => {
     }
     setIsSavingMilat(true);
     try {
-      const res = await fetch('/api/milatlar/close', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetUrl: OVERTIME_SCRIPT_URL,
-          id: closingMilatTarget.id,
-          milatBitis: closingMilatDate
-        })
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Milat kapatılamadı.');
+      let data = null;
+      try {
+        const { resp: res, json } = await tryFetchLocalJson('/api/milatlar/close', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetUrl: OVERTIME_SCRIPT_URL,
+            id: closingMilatTarget.id,
+            milatBitis: closingMilatDate
+          })
+        });
+        if (!res.ok || !json?.success) throw new Error(json?.error || 'Milat kapatılamadı.');
+        data = json;
+      } catch (localErr) {
+        const closedRec = {
+          ...closingMilatTarget,
+          milatBitis: formatDateLocal(closingMilatDate),
+          durum: 'KAPALI',
+          guncellemeTarihi: new Date().toISOString()
+        };
+        const nextList = sanitizeMilatlarList(sortMilatlarClient((milatlar || []).map(x => String(x.id) === String(closingMilatTarget.id) ? closedRec : x)));
+        const gasRes = await postMilatActionToGas({
+          action: 'save_milat',
+          autoClosePrevious: false,
+          milat: closedRec
+        }, OVERTIME_SCRIPT_URL);
+        if (!gasRes.ok) throw new Error('Milat kapatılamadı.');
+        data = {
+          success: true,
+          gasSynced: gasRes.gasSynced,
+          milatlar: (gasRes.milatlar && gasRes.milatlar.length > 0) ? gasRes.milatlar : nextList
+        };
+      }
       if (Array.isArray(data.milatlar)) {
-        window.__OGM_MILATLAR__ = data.milatlar;
-        setMilatlar(data.milatlar);
+        const cleanM = sanitizeMilatlarList(data.milatlar);
+        window.__OGM_MILATLAR__ = cleanM;
+        setMilatlar(cleanM);
       }
       setMilatGasSynced(!!data.gasSynced);
       showToast(`${closingMilatTarget.unvan} miladı ${formatDate(closingMilatDate)} tarihiyle kapatıldı.`);
@@ -4808,16 +5042,29 @@ const App = () => {
     showConfirm(`${m.unvan} (${formatDate(m.milatBaslangic)}) milat kaydını silmek istediğinize emin misiniz?`, async () => {
       setIsSavingMilat(true);
       try {
-        const res = await fetch('/api/milatlar/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targetUrl: OVERTIME_SCRIPT_URL, id: m.id })
-        });
-        const data = await res.json();
-        if (!res.ok || !data?.success) throw new Error(data?.error || 'Milat silinemedi.');
+        let data = null;
+        try {
+          const { resp: res, json } = await tryFetchLocalJson('/api/milatlar/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetUrl: OVERTIME_SCRIPT_URL, id: m.id })
+          });
+          if (!res.ok || !json?.success) throw new Error(json?.error || 'Milat silinemedi.');
+          data = json;
+        } catch (localErr) {
+          const nextList = (milatlar || []).filter(x => String(x.id) !== String(m.id));
+          const gasRes = await postMilatActionToGas({ action: 'delete_milat', id: m.id }, OVERTIME_SCRIPT_URL);
+          if (!gasRes.ok) throw new Error('Milat silinemedi.');
+          data = {
+            success: true,
+            gasSynced: gasRes.gasSynced,
+            milatlar: (gasRes.milatlar && gasRes.milatlar.length > 0) ? gasRes.milatlar : nextList
+          };
+        }
         if (Array.isArray(data.milatlar)) {
-          window.__OGM_MILATLAR__ = data.milatlar;
-          setMilatlar(data.milatlar);
+          const cleanM = sanitizeMilatlarList(data.milatlar);
+          window.__OGM_MILATLAR__ = cleanM;
+          setMilatlar(cleanM);
         }
         if (editingMilatId === m.id) setEditingMilatId(null);
         setMilatGasSynced(!!data.gasSynced);
@@ -4834,16 +5081,42 @@ const App = () => {
     setIsSavingMilat(true);
     try {
       const sessionPeople = personnel.filter(p => isPersonnelInGroup(p, adminRole));
-      const res = await fetch('/api/milatlar/init', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetUrl: OVERTIME_SCRIPT_URL, personnel: sessionPeople })
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.success) throw new Error(data?.error || 'Senkronizasyon başarısız.');
+      let data = null;
+      try {
+        const { resp: res, json } = await tryFetchLocalJson('/api/milatlar/init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetUrl: OVERTIME_SCRIPT_URL, personnel: sessionPeople })
+        });
+        if (!res.ok || !json?.success) throw new Error(json?.error || 'Senkronizasyon başarısız.');
+        data = json;
+      } catch (localErr) {
+        const currentList = [...(milatlar || [])];
+        const existingTitles = new Set(currentList.map(m => toCanonicalAscii(m.unvan)));
+        const defaults = buildDefaultMilatlarClient(sessionPeople, adminRole);
+        const toAdd = defaults.filter(d => !existingTitles.has(toCanonicalAscii(d.unvan)));
+        let nextList = sortMilatlarClient([...currentList, ...toAdd]);
+        let gasSyncedFlag = false;
+        if (toAdd.length > 0) {
+          const gasRes = await postMilatActionToGas({
+            action: 'save_milatlar',
+            replaceAll: false,
+            milatlar: toAdd
+          }, OVERTIME_SCRIPT_URL);
+          gasSyncedFlag = !!gasRes.gasSynced;
+          if (gasRes.milatlar && gasRes.milatlar.length > 0) nextList = gasRes.milatlar;
+        } else {
+          const gasRes = await fetchMilatlarDirectFromGas(OVERTIME_SCRIPT_URL);
+          gasSyncedFlag = !!gasRes.gasSynced;
+          if (gasRes.milatlar && gasRes.milatlar.length > 0) nextList = gasRes.milatlar;
+        }
+        data = { success: true, addedCount: toAdd.length, gasSynced: gasSyncedFlag, milatlar: nextList };
+      }
+
       if (Array.isArray(data.milatlar)) {
-        window.__OGM_MILATLAR__ = data.milatlar;
-        setMilatlar(data.milatlar);
+        const cleanM = sanitizeMilatlarList(data.milatlar);
+        window.__OGM_MILATLAR__ = cleanM;
+        setMilatlar(cleanM);
       }
       setMilatGasSynced(!!data.gasSynced);
       if (data.addedCount > 0) {
@@ -4860,14 +5133,24 @@ const App = () => {
 
   const handleOpenKomutModal = async () => {
     try {
-      const res = await fetch('/api/komut2');
-      const data = await res.json();
-      if (data?.success && data.code) {
-        setKomutCode(data.code);
-        setShowKomutModal(true);
-      } else {
-        showToast("komut2.gs okunamadı.", "error");
+      try {
+        const { json: data } = await tryFetchLocalJson(`/api/komut2?_t=${Date.now()}`, { cache: 'no-store' });
+        if (data?.success && data.code) {
+          setKomutCode(data.code);
+          setShowKomutModal(true);
+          return;
+        }
+      } catch (localErr) {}
+      const staticRes = await fetch(`/komut2.gs?_t=${Date.now()}`, { cache: 'no-store' });
+      if (staticRes.ok) {
+        const codeText = await staticRes.text();
+        if (codeText && !codeText.trim().startsWith('<')) {
+          setKomutCode(codeText);
+          setShowKomutModal(true);
+          return;
+        }
       }
+      showToast("komut2.gs okunamadı.", "error");
     } catch (err) {
       showToast("komut2.gs yüklenirken hata: " + (err.message || err), "error");
     }
@@ -5000,7 +5283,6 @@ const App = () => {
                   };
                   const updatedRecords = [...otherRecords, newRecord];
                   setAttendanceRecords(updatedRecords);
-                  safeLocalStorageSetItem('ogm_attendance', JSON.stringify(updatedRecords));
 
                   try {
                     // apiCall removed as per request
@@ -5410,15 +5692,15 @@ const App = () => {
                               />
                             </div>
                             <div>
-                              <label className="block text-[10px] font-bold text-cyan-300 mb-1">Resmi Tatil</label>
+                              <label className="block text-[10px] font-bold text-cyan-300 mb-1">Resmi Tatil (Opsiyonel)</label>
                               <input
                                 type="number"
                                 step="0.5"
                                 min="0"
-                                required
+                                placeholder="H.İçi/Sonu"
                                 value={milatForm.gorevResmiTatil}
                                 onChange={(e) => setMilatForm({ ...milatForm, gorevResmiTatil: e.target.value })}
-                                className="w-full bg-forest-950 border border-cyan-700/50 rounded-lg px-2.5 py-2 text-sm font-black text-white text-center focus:border-cyan-400 outline-none"
+                                className="w-full bg-forest-950 border border-cyan-700/50 rounded-lg px-2.5 py-2 text-sm font-black text-white text-center focus:border-cyan-400 outline-none placeholder:text-[10px] placeholder:text-forest-500"
                               />
                             </div>
                           </div>
@@ -5552,7 +5834,7 @@ const App = () => {
                                 {m.beklemeHaftaIci}s / {m.beklemeHaftaSonu}s / {m.beklemeResmiTatil}s
                               </td>
                               <td className="px-3 py-3 text-center font-black text-blue-300 whitespace-nowrap">
-                                {m.gorevHaftaIci}s / {m.gorevHaftaSonu}s / {m.gorevResmiTatil}s
+                                {m.gorevHaftaIci}s / {m.gorevHaftaSonu}s / {(m.gorevResmiTatil !== '' && m.gorevResmiTatil !== null && m.gorevResmiTatil !== undefined) ? `${m.gorevResmiTatil}s` : 'H.İçi/Sonu'}
                               </td>
                               <td className="px-3 py-3 text-center whitespace-nowrap">
                                 <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${isClosed ? 'bg-rose-500/15 text-rose-300 border-rose-500/30' : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'}`}>
@@ -5675,11 +5957,10 @@ const App = () => {
                                     showConfirm('Bu talebi onaylamak istiyor musunuz?', async () => {
                                       const updatedList = transactions.map(t => t.id === tx.id ? { ...t, status: 'APPROVED' } : t);
                                       setTransactions(updatedList);
-                                      safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                                       showToast("Talep onaylandı.");
 
                                       apiCall('approve_overtime', { id: tx.id, transaction: tx }, OVERTIME_SCRIPT_URL)
-                                        .then(() => { fetch('/api/fast-data?force=true').catch(() => {}); })
+                                        .then(() => { fetch(`/api/fast-data?force=true&_t=${Date.now()}`, { cache: 'no-store' }).catch(() => {}); })
                                         .catch(e => showToast("Onaylama hatası: " + (e.message || e), "error"));
                                     });
                                   }}
@@ -5695,11 +5976,10 @@ const App = () => {
                                   showConfirm('Bu talebi silmek/reddetmek istiyor musunuz?', async () => {
                                     const updatedList = transactions.filter(t => t.id !== tx.id);
                                     setTransactions(updatedList);
-                                    safeLocalStorageSetItem('ogm_transactions', JSON.stringify(updatedList));
                                     showToast("Talep silindi.");
 
                                     apiCall('delete_overtime', { id: tx.id }, OVERTIME_SCRIPT_URL)
-                                      .then(() => { fetch('/api/fast-data?force=true').catch(() => {}); })
+                                      .then(() => { fetch(`/api/fast-data?force=true&_t=${Date.now()}`, { cache: 'no-store' }).catch(() => {}); })
                                       .catch(e => showToast("Silme hatası: " + (e.message || e), "error"));
                                   });
                                 }}

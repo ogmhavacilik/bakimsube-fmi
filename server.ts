@@ -14,7 +14,7 @@ interface MilatRecord {
   beklemeResmiTatil: number;
   gorevHaftaIci: number;
   gorevHaftaSonu: number;
-  gorevResmiTatil: number;
+  gorevResmiTatil: number | null | "";
   durum: "AKTİF" | "KAPALI";
   aciklama: string;
   guncellemeTarihi: string;
@@ -47,7 +47,7 @@ async function startServer() {
   const FAST_CSV_TRANSACTIONS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT3MCU4qhFXt1MJtK_ypsaEj2ZtqgJ_HZKAJU3AIA25dd-qhcotXNc-1Ks3YBalsJt_AAC3OwAanYbR/pub?output=csv&gid=1412906013";
   const FAST_CSV_PERSONNEL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=0";
   const FAST_CSV_ATTENDANCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=1568664684";
-  const DEFAULT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwXhg3TIWsb7FkySgsMMOEYk_4Yhsifk1Tc4vWDx2u8cap4RardTm_blQfrvtRCaeiV/exec";
+  const DEFAULT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw0MGJqlIm2pX-iXmnBrCrP6kRWmzrnxegUQfvRbBKTZ0k2Vy1dSodOgbostS6JvQIj8Q/exec";
   const DATA_DIR = path.join(process.cwd(), "data");
   const MILATLAR_FILE = path.join(DATA_DIR, "milatlar.json");
 
@@ -108,26 +108,31 @@ async function startServer() {
     return objs;
   }
 
-  // Fast CSV data endpoint - Pure live Google Sheets CSV, NO local JSON caching
+  // Fast CSV data endpoint - Pure live Google Sheets CSV, NO caching at all
   app.get("/api/fast-data", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     try {
-      const fetchUtf8 = async (url: string, timeoutMs: number) => {
+      const fetchUtf8 = async (url: string, timeoutMs: number, label: string) => {
         const r = await fetch(url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now(), { 
-          signal: AbortSignal.timeout(timeoutMs), 
+          signal: AbortSignal.timeout(timeoutMs),
+          cache: "no-store",
           headers: { 
             "User-Agent": "Mozilla/5.0", 
             "Cache-Control": "no-cache, no-store, must-revalidate", 
             "Pragma": "no-cache" 
           } 
         });
+        if (!r.ok) throw new Error(`${label} HTTP ${r.status}`);
         const buf = await r.arrayBuffer();
         return new TextDecoder('utf-8').decode(buf);
       };
 
       const [resTx, resPer, resAtt] = await Promise.all([
-        fetchUtf8(FAST_CSV_TRANSACTIONS, 15000).catch(() => ""),
-        fetchUtf8(FAST_CSV_PERSONNEL, 15000).catch(() => ""),
-        fetchUtf8(FAST_CSV_ATTENDANCE, 20000).catch(() => "")
+        fetchUtf8(FAST_CSV_TRANSACTIONS, 20000, "Transactions").catch((e) => { console.warn("[fast-data] Transactions CSV warn:", e?.message); return ""; }),
+        fetchUtf8(FAST_CSV_PERSONNEL, 20000, "Personnel").catch((e) => { console.warn("[fast-data] Personnel CSV warn:", e?.message); return ""; }),
+        fetchUtf8(FAST_CSV_ATTENDANCE, 25000, "Attendance").catch((e) => { console.warn("[fast-data] Attendance CSV warn:", e?.message); return ""; })
       ]);
 
       const csvTxObjs = resTx ? rowsToObjects(parseCSV(resTx)) : [];
@@ -138,7 +143,7 @@ async function startServer() {
         transactions: csvTxObjs,
         personnel: perObjs,
         attendance: attObjs,
-        milatlar: readLocalMilatlar()
+        milatlar: sanitizeLegacySeededMilatlar(readLocalMilatlar()).list
       };
 
       return res.json({
@@ -155,7 +160,7 @@ async function startServer() {
         transactions: [],
         personnel: [],
         attendance: [],
-        milatlar: readLocalMilatlar()
+        milatlar: sanitizeLegacySeededMilatlar(readLocalMilatlar()).list
       });
     }
   });
@@ -244,7 +249,7 @@ async function startServer() {
         beklemeResmiTatil: bHol,
         gorevHaftaIci: 3,
         gorevHaftaSonu: 11,
-        gorevResmiTatil: 11,
+        gorevResmiTatil: "",
         durum: "KAPALI",
         aciklama: "18 Eylül 2026 öncesi standart 3-11 dönemi",
         guncellemeTarihi: nowTs
@@ -260,7 +265,7 @@ async function startServer() {
         beklemeResmiTatil: bHol,
         gorevHaftaIci: 1,
         gorevHaftaSonu: 10,
-        gorevResmiTatil: 10,
+        gorevResmiTatil: "",
         durum: "KAPALI",
         aciklama: "18 Eylül - 21 Ekim 2026 OGM dönemi",
         guncellemeTarihi: nowTs
@@ -276,7 +281,7 @@ async function startServer() {
         beklemeResmiTatil: bHol,
         gorevHaftaIci: 0,
         gorevHaftaSonu: 8,
-        gorevResmiTatil: 8,
+        gorevResmiTatil: "",
         durum: "AKTİF",
         aciklama: "22 Ekim 2026 sonrası güncel dönem",
         guncellemeTarihi: nowTs
@@ -332,18 +337,55 @@ async function startServer() {
     }
   }
 
+  const LEGACY_SEED_DESCRIPTIONS = new Set([
+    "18 Eylül 2026 öncesi standart 3-11 dönemi",
+    "18 Eylül - 21 Ekim 2026 OGM dönemi",
+    "22 Ekim 2026 sonrası güncel dönem"
+  ]);
+
+  function sanitizeLegacySeededMilatlar(list: MilatRecord[]): { list: MilatRecord[]; changed: boolean } {
+    let changed = false;
+    const cleaned = (list || []).map((m) => {
+      const idStr = String(m?.id || "");
+      const hasLegacyVal =
+        m?.gorevResmiTatil !== "" &&
+        m?.gorevResmiTatil !== null &&
+        m?.gorevResmiTatil !== undefined &&
+        Number(m.gorevResmiTatil) === Number(m.gorevHaftaSonu) &&
+        [11, 10, 8].includes(Number(m.gorevResmiTatil));
+      const isLegacySeedRow =
+        /^milat-[A-Z0-9]+-[123]$/.test(idStr) &&
+        (LEGACY_SEED_DESCRIPTIONS.has(String(m?.aciklama || "")) || String(m?.guncellemeTarihi || "").includes("10:29:02"));
+
+      if (hasLegacyVal && isLegacySeedRow) {
+        changed = true;
+        return { ...m, gorevResmiTatil: "" as const };
+      }
+      return m;
+    });
+    return { list: cleaned, changed };
+  }
+
   async function ensureMilatlarOnStartup() {
     try {
-      const alreadyExists = fs.existsSync(MILATLAR_FILE) && readLocalMilatlar().length > 0;
+      const existingList = readLocalMilatlar();
+      const alreadyExists = fs.existsSync(MILATLAR_FILE) && existingList.length > 0;
       const gasCheck = await checkGasMilatlarSupport(DEFAULT_APPS_SCRIPT_URL);
 
       if (alreadyExists) {
-        console.log("[milatlar] Yerel milatlar sayfası zaten mevcut — üzerine yazılmadı.");
+        const { list: cleaned, changed } = sanitizeLegacySeededMilatlar(existingList);
+        if (changed) {
+          writeLocalMilatlar(sortMilatlar(cleaned));
+          console.log("[milatlar] Varsayılan dönemlerde Hafta İçi/Sonu kuralını korumak için gorevResmiTatil temizlendi.");
+        } else {
+          console.log("[milatlar] Yerel milatlar sayfası zaten mevcut — üzerine yazılmadı.");
+        }
         return;
       }
 
       if (gasCheck.supported && gasCheck.milatlar && gasCheck.milatlar.length > 0) {
-        writeLocalMilatlar(sortMilatlar(gasCheck.milatlar));
+        const { list: cleaned } = sanitizeLegacySeededMilatlar(gasCheck.milatlar);
+        writeLocalMilatlar(sortMilatlar(cleaned));
         console.log(`[milatlar] Google E-Tablo 'milatlar' sayfasından ${gasCheck.milatlar.length} kayıt senkronize edildi.`);
         return;
       }
@@ -370,11 +412,15 @@ async function startServer() {
   }
 
   app.get("/api/milatlar", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     const targetUrl = String(req.query.targetUrl || DEFAULT_APPS_SCRIPT_URL);
-    const localList = readLocalMilatlar();
+    const localList = sanitizeLegacySeededMilatlar(readLocalMilatlar()).list;
     const gasCheck = await checkGasMilatlarSupport(targetUrl);
     if (gasCheck.supported && gasCheck.milatlar && gasCheck.milatlar.length > 0) {
-      const sorted = sortMilatlar(gasCheck.milatlar);
+      const { list: cleaned } = sanitizeLegacySeededMilatlar(gasCheck.milatlar);
+      const sorted = sortMilatlar(cleaned);
       writeLocalMilatlar(sorted);
       return res.json({ success: true, sheetName: "milatlar", gasSynced: true, milatlar: sorted });
     }
@@ -459,6 +505,7 @@ async function startServer() {
         });
       }
 
+      const hasCustomHol = incoming.gorevResmiTatil !== "" && incoming.gorevResmiTatil !== null && incoming.gorevResmiTatil !== undefined;
       const record: MilatRecord = {
         id: incomingId,
         oturum: String(incoming.oturum || "ogm1"),
@@ -470,7 +517,7 @@ async function startServer() {
         beklemeResmiTatil: Number(incoming.beklemeResmiTatil ?? 2),
         gorevHaftaIci: Number(incoming.gorevHaftaIci ?? 0),
         gorevHaftaSonu: Number(incoming.gorevHaftaSonu ?? 8),
-        gorevResmiTatil: Number(incoming.gorevResmiTatil ?? 8),
+        gorevResmiTatil: hasCustomHol ? Number(incoming.gorevResmiTatil) : "",
         durum: incomingEnd ? "KAPALI" : (incoming.durum === "KAPALI" ? "KAPALI" : "AKTİF"),
         aciklama: String(incoming.aciklama || ""),
         guncellemeTarihi: nowTs

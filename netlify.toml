@@ -1,3 +1,12 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
 [[redirects]]
   from = "/api/proxy"
   to = "https://ais-pre-inlnbhcb35ep74acdiakoj-216611645803.europe-west2.run.app/api/proxy"
