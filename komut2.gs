@@ -21,10 +21,12 @@ function doGet(e) {
   if (action === "get_init_data") {
     var output = {
       success: true,
+      milatlarSupported: true,
       data: {
         attendance: getAttendance(),
         personnel: getPersonnel(),
-        transactions: getTransactions()
+        transactions: getTransactions(),
+        milatlar: getMilatlar()
       }
     };
     var jsonStr = JSON.stringify(output);
@@ -35,10 +37,29 @@ function doGet(e) {
     return ContentService.createTextOutput(jsonStr)
                          .setMimeType(ContentService.MimeType.JSON);
   }
+
+  if (action === "get_milatlar" || action === "init_milatlar") {
+    var initInfo = ensureMilatlarSheetOnce();
+    var mOutput = {
+      success: true,
+      milatlarSupported: true,
+      sheetName: "milatlar",
+      created: initInfo.created,
+      alreadyExists: initInfo.alreadyExists,
+      milatlar: getMilatlar()
+    };
+    var mJson = JSON.stringify(mOutput);
+    if (callback) {
+      return ContentService.createTextOutput(callback + "(" + mJson + ");")
+                           .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
+    return ContentService.createTextOutput(mJson)
+                         .setMimeType(ContentService.MimeType.JSON);
+  }
   
-  var msg = "Sistem Aktif - Personel, Yoklama ve Plansız İşlemler Entegrasyonu Çalışıyor.";
+  var msg = "Sistem Aktif - Personel, Yoklama, Plansız İşlemler ve Milatlar Entegrasyonu Çalışıyor.";
   if (callback) {
-    return ContentService.createTextOutput(callback + "(" + JSON.stringify({success: true, message: msg}) + ");")
+    return ContentService.createTextOutput(callback + "(" + JSON.stringify({success: true, milatlarSupported: true, message: msg}) + ");")
                          .setMimeType(ContentService.MimeType.JAVASCRIPT);
   }
   return ContentService.createTextOutput(msg);
@@ -74,12 +95,28 @@ function doPost(e) {
     if (action === "get_init_data") {
       output = {
         success: true,
+        milatlarSupported: true,
         data: {
           attendance: getAttendance(),
           personnel: getPersonnel(),
-          transactions: getTransactions()
+          transactions: getTransactions(),
+          milatlar: getMilatlar()
         }
       };
+    } else if (action === "init_milatlar" || action === "get_milatlar") {
+      var initRes = ensureMilatlarSheetOnce(body.milatlar || body.defaultRows);
+      output = {
+        success: true,
+        milatlarSupported: true,
+        sheetName: "milatlar",
+        created: initRes.created,
+        alreadyExists: initRes.alreadyExists,
+        milatlar: getMilatlar()
+      };
+    } else if (action === "save_milat" || action === "save_milatlar") {
+      output = saveMilatlar(body);
+    } else if (action === "delete_milat") {
+      output = deleteMilat(body);
     } else if (action === "save_overtime" || action === "save_fmi" || action === "add_overtime" || action === "use_permit") {
       output = saveOvertime(body);
     } else if (action === "approve_overtime") {
@@ -384,4 +421,374 @@ function getTransactions() {
     result.push(obj);
   }
   return result;
+}
+
+// =========================================================================
+// MİLATLAR VE KATSAYI KOŞULLARI YÖNETİMİ ("milatlar" Sayfası)
+// =========================================================================
+
+var MILATLAR_HEADERS = [
+  "ID",
+  "Oturum",
+  "Unvan",
+  "Milat_Baslangic",
+  "Milat_Bitis",
+  "Bekleme_HaftaIci",
+  "Bekleme_HaftaSonu",
+  "Bekleme_ResmiTatil",
+  "Gorev_HaftaIci",
+  "Gorev_HaftaSonu",
+  "Gorev_ResmiTatil",
+  "Durum",
+  "Aciklama",
+  "Guncelleme_Tarihi"
+];
+
+function normalizeTrUpper(str) {
+  return String(str || "")
+    .replace(/İ/g, "I").replace(/ı/g, "I").replace(/i/g, "I")
+    .replace(/ğ/g, "G").replace(/Ğ/g, "G")
+    .replace(/ü/g, "U").replace(/Ü/g, "U")
+    .replace(/ş/g, "S").replace(/Ş/g, "S")
+    .replace(/ö/g, "O").replace(/Ö/g, "O")
+    .replace(/ç/g, "C").replace(/Ç/g, "C")
+    .toUpperCase()
+    .trim();
+}
+
+function normalizeYmd(val) {
+  if (!val) return "";
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd");
+  }
+  var s = String(val).trim();
+  if (!s) return "";
+  var dmy = s.split(" ")[0].match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{4})$/);
+  if (dmy) {
+    return dmy[3] + "-" + ("0" + dmy[2]).slice(-2) + "-" + ("0" + dmy[1]).slice(-2);
+  }
+  var ymd = s.split(" ")[0].match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/);
+  if (ymd) {
+    return ymd[1] + "-" + ("0" + ymd[2]).slice(-2) + "-" + ("0" + ymd[3]).slice(-2);
+  }
+  return s.split("T")[0];
+}
+
+function prevDayYmd(dateStr) {
+  var norm = normalizeYmd(dateStr);
+  var parts = norm.split("-");
+  if (parts.length !== 3) return "";
+  var dt = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]) - 1));
+  var y = dt.getUTCFullYear();
+  var m = ("0" + (dt.getUTCMonth() + 1)).slice(-2);
+  var d = ("0" + dt.getUTCDate()).slice(-2);
+  return y + "-" + m + "-" + d;
+}
+
+function getDefaultMilatlarSeedRows() {
+  var nowTs = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd HH:mm:ss");
+  var personnel = [];
+  try { personnel = getPersonnel(); } catch (e) { personnel = []; }
+
+  var titleMap = {};
+  var registerTitle = function(rawTitle, rawUnit) {
+    var t = String(rawTitle || "").trim();
+    if (!t) return;
+    var norm = normalizeTrUpper(t);
+    var uNorm = normalizeTrUpper(rawUnit || "");
+    var isExcludedAircraft = ["BELL-429", "BELL 429", "B-360", "B360", "T-70", "T70", "C-650", "C650", "AT-802", "AT802"].some(function(pat) { return norm.indexOf(pat) !== -1; });
+    if (isExcludedAircraft) return;
+    var isDriver = ["SOFOR", "SURUCU"].some(function(k) { return norm.indexOf(k) !== -1 || uNorm.indexOf(k) !== -1; });
+    var isYerDestek = isDriver || ["DESTEK", "ISCI", "HIZMETLI"].some(function(k) { return norm.indexOf(k) !== -1 || uNorm.indexOf(k) !== -1; });
+    var oturum = isYerDestek ? "ogm2" : "ogm1";
+    if (!titleMap[norm]) {
+      titleMap[norm] = { unvan: t, oturum: oturum, isDriver: isDriver };
+    }
+  };
+
+  registerTitle("UÇAK TEKNİKERİ", "TEKNİK");
+  registerTitle("UÇAK TEKNİSYENİ", "TEKNİK");
+  registerTitle("DESTEK MEMUR(ŞÖFÖR)", "YER DESTEK");
+  registerTitle("DESTEK MEMURU", "YER DESTEK");
+
+  for (var i = 0; i < personnel.length; i++) {
+    var p = personnel[i];
+    var pTitle = p.TITLE || p.title || p.UNVAN || p["ÜNVAN"] || p.unvan || "";
+    var pUnit = p.BIRIM || p["BİRİM"] || p.unit || p.UNIT || "";
+    registerTitle(pTitle, pUnit);
+  }
+
+  var rows = [];
+  var keys = Object.keys(titleMap);
+  for (var k = 0; k < keys.length; k++) {
+    var info = titleMap[keys[k]];
+    var bWkend = info.isDriver ? 10 : 2;
+    var bHol = info.isDriver ? 10 : 2;
+    var slug = keys[k].replace(/[^A-Z0-9]/g, "").slice(0, 18);
+
+    rows.push(["milat-" + slug + "-1", info.oturum, info.unvan, "2026-05-01", "2026-09-17", 1, bWkend, bHol, 3, 11, 11, "KAPALI", "18 Eylül 2026 öncesi standart 3-11 dönemi", nowTs]);
+    rows.push(["milat-" + slug + "-2", info.oturum, info.unvan, "2026-09-18", "2026-10-21", 1, bWkend, bHol, 1, 10, 10, "KAPALI", "18 Eylül - 21 Ekim 2026 OGM dönemi", nowTs]);
+    rows.push(["milat-" + slug + "-3", info.oturum, info.unvan, "2026-10-22", "", 1, bWkend, bHol, 0, 8, 8, "AKTİF", "22 Ekim 2026 sonrası güncel dönem", nowTs]);
+  }
+  return rows;
+}
+
+function findExistingMilatlarSheet(db) {
+  if (!db) return null;
+  var exact = db.getSheetByName("milatlar");
+  if (exact) return exact;
+  var allSheets = db.getSheets();
+  for (var i = 0; i < allSheets.length; i++) {
+    var sName = String(allSheets[i].getName() || "").trim().toLowerCase();
+    if (sName === "milatlar" || sName === "mİlatlar") {
+      return allSheets[i];
+    }
+  }
+  return null;
+}
+
+function ensureMilatlarSheetOnce(customRows) {
+  var db = getSpreadsheet();
+  if (!db) return { sheet: null, created: false, alreadyExists: false };
+
+  // Sayfa zaten varsa kesinlikle üzerine yazılmaz!
+  var existingSheet = findExistingMilatlarSheet(db);
+  if (existingSheet) {
+    return { sheet: existingSheet, created: false, alreadyExists: true };
+  }
+
+  var sheet = db.insertSheet("milatlar");
+  sheet.appendRow(MILATLAR_HEADERS);
+  var headerRange = sheet.getRange(1, 1, 1, MILATLAR_HEADERS.length);
+  headerRange.setFontWeight("bold").setBackground("#194b2e").setFontColor("#ffffff");
+  sheet.setFrozenRows(1);
+
+  var seedRows = [];
+  if (customRows && customRows.length > 0) {
+    var nowTs = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd HH:mm:ss");
+    for (var i = 0; i < customRows.length; i++) {
+      var m = customRows[i];
+      seedRows.push([
+        m.id || ("milat-" + new Date().getTime() + "-" + i),
+        m.oturum || "ogm1",
+        m.unvan || "",
+        normalizeYmd(m.milatBaslangic),
+        normalizeYmd(m.milatBitis),
+        Number(m.beklemeHaftaIci !== undefined ? m.beklemeHaftaIci : 1),
+        Number(m.beklemeHaftaSonu !== undefined ? m.beklemeHaftaSonu : 2),
+        Number(m.beklemeResmiTatil !== undefined ? m.beklemeResmiTatil : 2),
+        Number(m.gorevHaftaIci !== undefined ? m.gorevHaftaIci : 0),
+        Number(m.gorevHaftaSonu !== undefined ? m.gorevHaftaSonu : 8),
+        Number(m.gorevResmiTatil !== undefined ? m.gorevResmiTatil : 8),
+        m.durum || (normalizeYmd(m.milatBitis) ? "KAPALI" : "AKTİF"),
+        m.aciklama || "",
+        m.guncellemeTarihi || nowTs
+      ]);
+    }
+  } else {
+    seedRows = getDefaultMilatlarSeedRows();
+  }
+
+  if (seedRows.length > 0) {
+    sheet.getRange(2, 1, seedRows.length, MILATLAR_HEADERS.length).setValues(seedRows);
+    sheet.getRange(2, 4, seedRows.length, 2).setNumberFormat("@");
+  }
+
+  return { sheet: sheet, created: true, alreadyExists: false };
+}
+
+function getMilatlar() {
+  var db = getSpreadsheet();
+  if (!db) return [];
+  var info = ensureMilatlarSheetOnce();
+  var sheet = info.sheet;
+  if (!sheet) return [];
+
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return [];
+
+  var headers = data[0];
+  var result = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var hasAny = false;
+    for (var c = 0; c < row.length; c++) {
+      if (row[c] !== "" && row[c] !== null && row[c] !== undefined) { hasAny = true; break; }
+    }
+    if (!hasAny) continue;
+
+    var raw = {};
+    for (var j = 0; j < headers.length; j++) {
+      var h = String(headers[j]).trim();
+      if (h) raw[h] = row[j];
+    }
+
+    var baslangic = normalizeYmd(raw.Milat_Baslangic || raw["Milat Başlangıç"] || raw.milatBaslangic || "");
+    var bitis = normalizeYmd(raw.Milat_Bitis || raw["Milat Bitiş"] || raw.milatBitis || "");
+    var durum = String(raw.Durum || raw.durum || (bitis ? "KAPALI" : "AKTİF")).trim();
+
+    result.push({
+      id: String(raw.ID || raw.id || ("milat-row-" + i)),
+      oturum: String(raw.Oturum || raw.oturum || "ogm1").trim(),
+      unvan: String(raw.Unvan || raw.unvan || "").trim(),
+      milatBaslangic: baslangic,
+      milatBitis: bitis,
+      beklemeHaftaIci: Number(raw.Bekleme_HaftaIci !== undefined && raw.Bekleme_HaftaIci !== "" ? raw.Bekleme_HaftaIci : 1),
+      beklemeHaftaSonu: Number(raw.Bekleme_HaftaSonu !== undefined && raw.Bekleme_HaftaSonu !== "" ? raw.Bekleme_HaftaSonu : 2),
+      beklemeResmiTatil: Number(raw.Bekleme_ResmiTatil !== undefined && raw.Bekleme_ResmiTatil !== "" ? raw.Bekleme_ResmiTatil : 2),
+      gorevHaftaIci: Number(raw.Gorev_HaftaIci !== undefined && raw.Gorev_HaftaIci !== "" ? raw.Gorev_HaftaIci : 0),
+      gorevHaftaSonu: Number(raw.Gorev_HaftaSonu !== undefined && raw.Gorev_HaftaSonu !== "" ? raw.Gorev_HaftaSonu : 8),
+      gorevResmiTatil: Number(raw.Gorev_ResmiTatil !== undefined && raw.Gorev_ResmiTatil !== "" ? raw.Gorev_ResmiTatil : 8),
+      durum: durum,
+      aciklama: String(raw.Aciklama || raw["Açıklama"] || raw.aciklama || ""),
+      guncellemeTarihi: String(raw.Guncelleme_Tarihi || raw.guncellemeTarihi || "")
+    });
+  }
+  return result;
+}
+
+function milatToRowArray(m, nowTs) {
+  var bitis = normalizeYmd(m.milatBitis || "");
+  return [
+    String(m.id || ("milat-" + new Date().getTime())),
+    String(m.oturum || "ogm1"),
+    String(m.unvan || ""),
+    normalizeYmd(m.milatBaslangic || ""),
+    bitis,
+    Number(m.beklemeHaftaIci !== undefined ? m.beklemeHaftaIci : 1),
+    Number(m.beklemeHaftaSonu !== undefined ? m.beklemeHaftaSonu : 2),
+    Number(m.beklemeResmiTatil !== undefined ? m.beklemeResmiTatil : 2),
+    Number(m.gorevHaftaIci !== undefined ? m.gorevHaftaIci : 0),
+    Number(m.gorevHaftaSonu !== undefined ? m.gorevHaftaSonu : 8),
+    Number(m.gorevResmiTatil !== undefined ? m.gorevResmiTatil : 8),
+    m.durum || (bitis ? "KAPALI" : "AKTİF"),
+    String(m.aciklama || ""),
+    String(m.guncellemeTarihi || nowTs)
+  ];
+}
+
+function saveMilatlar(body) {
+  var info = ensureMilatlarSheetOnce();
+  var sheet = info.sheet;
+  if (!sheet) return { success: false, error: "milatlar sayfası açılamadı." };
+
+  var nowTs = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd HH:mm:ss");
+  var currentList = getMilatlar();
+
+  if (body.milat) {
+    var incoming = body.milat;
+    var incomingId = String(incoming.id || ("milat-" + new Date().getTime()));
+    var incomingUnvanNorm = normalizeTrUpper(incoming.unvan);
+    var incomingStart = normalizeYmd(incoming.milatBaslangic);
+    var incomingEnd = normalizeYmd(incoming.milatBitis);
+    var autoClosePrevious = body.autoClosePrevious !== false;
+
+    if (autoClosePrevious && incomingStart) {
+      var closeDate = prevDayYmd(incomingStart);
+      for (var i = 0; i < currentList.length; i++) {
+        var existing = currentList[i];
+        if (String(existing.id) !== incomingId && normalizeTrUpper(existing.unvan) === incomingUnvanNorm) {
+          if (existing.milatBaslangic && existing.milatBaslangic < incomingStart && (!existing.milatBitis || existing.milatBitis >= incomingStart)) {
+            existing.milatBitis = closeDate;
+            existing.durum = "KAPALI";
+            existing.guncellemeTarihi = nowTs;
+          }
+        }
+      }
+    }
+
+    var record = {
+      id: incomingId,
+      oturum: incoming.oturum || "ogm1",
+      unvan: incoming.unvan || "",
+      milatBaslangic: incomingStart,
+      milatBitis: incomingEnd,
+      beklemeHaftaIci: Number(incoming.beklemeHaftaIci !== undefined ? incoming.beklemeHaftaIci : 1),
+      beklemeHaftaSonu: Number(incoming.beklemeHaftaSonu !== undefined ? incoming.beklemeHaftaSonu : 2),
+      beklemeResmiTatil: Number(incoming.beklemeResmiTatil !== undefined ? incoming.beklemeResmiTatil : 2),
+      gorevHaftaIci: Number(incoming.gorevHaftaIci !== undefined ? incoming.gorevHaftaIci : 0),
+      gorevHaftaSonu: Number(incoming.gorevHaftaSonu !== undefined ? incoming.gorevHaftaSonu : 8),
+      gorevResmiTatil: Number(incoming.gorevResmiTatil !== undefined ? incoming.gorevResmiTatil : 8),
+      durum: incomingEnd ? "KAPALI" : (incoming.durum || "AKTİF"),
+      aciklama: incoming.aciklama || "",
+      guncellemeTarihi: nowTs
+    };
+
+    var replaced = false;
+    for (var idx = 0; idx < currentList.length; idx++) {
+      if (String(currentList[idx].id) === incomingId) {
+        currentList[idx] = record;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) currentList.push(record);
+  } else if (Array.isArray(body.milatlar)) {
+    if (body.replaceAll) {
+      currentList = body.milatlar;
+    } else {
+      for (var k = 0; k < body.milatlar.length; k++) {
+        var item = body.milatlar[k];
+        var itemId = String(item.id || ("milat-" + new Date().getTime() + "-" + k));
+        var found = false;
+        for (var c = 0; c < currentList.length; c++) {
+          if (String(currentList[c].id) === itemId) {
+            currentList[c] = item;
+            found = true;
+            break;
+          }
+        }
+        if (!found) currentList.push(item);
+      }
+    }
+  }
+
+  currentList.sort(function(a, b) {
+    var ua = normalizeTrUpper(a.unvan);
+    var ub = normalizeTrUpper(b.unvan);
+    if (ua !== ub) return ua < ub ? -1 : 1;
+    return String(a.milatBaslangic || "") < String(b.milatBaslangic || "") ? -1 : (String(a.milatBaslangic || "") > String(b.milatBaslangic || "") ? 1 : 0);
+  });
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, MILATLAR_HEADERS.length).clearContent();
+  }
+  if (currentList.length > 0) {
+    var matrix = [];
+    for (var r = 0; r < currentList.length; r++) {
+      matrix.push(milatToRowArray(currentList[r], nowTs));
+    }
+    sheet.getRange(2, 1, matrix.length, MILATLAR_HEADERS.length).setValues(matrix);
+    sheet.getRange(2, 4, matrix.length, 2).setNumberFormat("@");
+  }
+
+  return {
+    success: true,
+    milatlarSupported: true,
+    sheetName: "milatlar",
+    milatlar: getMilatlar()
+  };
+}
+
+function deleteMilat(body) {
+  var id = body.id;
+  if (!id) return { success: false, error: "ID bulunamadı" };
+  var db = getSpreadsheet();
+  var sheet = findExistingMilatlarSheet(db);
+  if (!sheet) return { success: true, milatlar: [] };
+
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === String(id).trim()) {
+      sheet.deleteRow(i + 1);
+      break;
+    }
+  }
+  return {
+    success: true,
+    milatlarSupported: true,
+    sheetName: "milatlar",
+    milatlar: getMilatlar()
+  };
 }
