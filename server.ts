@@ -108,14 +108,14 @@ async function startServer() {
     return objs;
   }
 
-  // Fast CSV data endpoint - Pure live Google Sheets CSV, NO caching at all
+  // Fast live data endpoint - Pure live Google Sheets & Apps Script, NO caching at all
   app.get("/api/fast-data", async (req, res) => {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     try {
       const fetchUtf8 = async (url: string, timeoutMs: number, label: string) => {
-        const r = await fetch(url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now(), { 
+        const r = await fetch(url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now() + '&r=' + Math.random(), { 
           signal: AbortSignal.timeout(timeoutMs),
           cache: "no-store",
           headers: { 
@@ -129,21 +129,42 @@ async function startServer() {
         return new TextDecoder('utf-8').decode(buf);
       };
 
-      const [resTx, resPer, resAtt] = await Promise.all([
+      const fetchLiveGasInit = async () => {
+        const r = await fetch(`${DEFAULT_APPS_SCRIPT_URL}?action=get_init_data&_t=${Date.now()}`, {
+          method: "GET",
+          redirect: "follow",
+          cache: "no-store",
+          signal: AbortSignal.timeout(20000)
+        });
+        if (!r.ok) throw new Error(`GAS HTTP ${r.status}`);
+        const json = await r.json();
+        return json?.data || json;
+      };
+
+      const [gasData, resTxCsv, resPer, resAtt] = await Promise.all([
+        fetchLiveGasInit().catch((e) => { console.warn("[fast-data] GAS live warn:", e?.message); return null; }),
         fetchUtf8(FAST_CSV_TRANSACTIONS, 20000, "Transactions").catch((e) => { console.warn("[fast-data] Transactions CSV warn:", e?.message); return ""; }),
         fetchUtf8(FAST_CSV_PERSONNEL, 20000, "Personnel").catch((e) => { console.warn("[fast-data] Personnel CSV warn:", e?.message); return ""; }),
         fetchUtf8(FAST_CSV_ATTENDANCE, 25000, "Attendance").catch((e) => { console.warn("[fast-data] Attendance CSV warn:", e?.message); return ""; })
       ]);
 
-      const csvTxObjs = resTx ? rowsToObjects(parseCSV(resTx)) : [];
+      const gasTxObjs = Array.isArray(gasData?.transactions) ? gasData.transactions : [];
+      const csvTxObjs = resTxCsv ? rowsToObjects(parseCSV(resTxCsv)) : [];
+      const finalTxObjs = gasTxObjs.length > 0 ? gasTxObjs : csvTxObjs;
       const perObjs = resPer ? rowsToObjects(parseCSV(resPer)) : [];
       const attObjs = resAtt ? rowsToObjects(parseCSV(resAtt)) : [];
 
+      let milatObjs = sanitizeLegacySeededMilatlar(readLocalMilatlar()).list;
+      if (Array.isArray(gasData?.milatlar) && gasData.milatlar.length > 0) {
+        milatObjs = sanitizeLegacySeededMilatlar(sortMilatlar(gasData.milatlar)).list;
+        writeLocalMilatlar(milatObjs);
+      }
+
       const payload = {
-        transactions: csvTxObjs,
+        transactions: finalTxObjs,
         personnel: perObjs,
         attendance: attObjs,
-        milatlar: sanitizeLegacySeededMilatlar(readLocalMilatlar()).list
+        milatlar: milatObjs
       };
 
       return res.json({

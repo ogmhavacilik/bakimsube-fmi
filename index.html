@@ -111,7 +111,7 @@ const OVERTIME_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw0MGJqlIm2
 const PERSONNEL_SCRIPT_URL = OVERTIME_SCRIPT_URL;
 const SYSTEM_ID = "0005536572913";
 
-const FAST_CSV_TRANSACTIONS = "https://script.google.com/macros/s/AKfycbxBpJ98Vvl7WWvVpIfQHMrqlEkCouBjnj2dm6id3OpiKdLpnfLmHQUob_zW1PeZqElAPg/exec";
+const FAST_CSV_TRANSACTIONS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT3MCU4qhFXt1MJtK_ypsaEj2ZtqgJ_HZKAJU3AIA25dd-qhcotXNc-1Ks3YBalsJt_AAC3OwAanYbR/pub?output=csv&gid=1412906013";
 const FAST_CSV_PERSONNEL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=0";
 const FAST_CSV_ATTENDANCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQDs49-l2K-dYi11wKj11T0E5KkXMFdMfDN-SP23onLZLvZoV6dUGrxpOuPpRwvTxmc2P__UA6IcqVc/pub?output=csv&gid=1568664684";
 
@@ -330,17 +330,9 @@ const getBreakdownData = (breakdownObj, targetDayType) => {
   return { day: 0, night: 0 };
 };
 
-const safeLocalStorageSetItem = (key, value) => {
-  // Verilerin önbelleğe kaydedilmesi kullanıcı talimatı gereği kesin olarak yasaklanmıştır
-  if (key.includes('transactions') || key.includes('tx') || key.includes('attendance') || key.includes('personnel') || key.includes('overtime')) {
-    try { localStorage.removeItem(key); } catch (e) {}
-    return;
-  }
-  try {
-    localStorage.setItem(key, value);
-  } catch (e) {
-    console.warn("LocalStorage yazma hatası:", e);
-  }
+const safeLocalStorageSetItem = (key, _value) => {
+  // Hiçbir veri önbellekte tutulmaz ve localStorage'a yazılmaz
+  try { localStorage.removeItem(key); } catch (e) {}
 };
 
 const isStandbyDate = (dateStr) => {
@@ -826,7 +818,7 @@ const apiCall = async (action, payload = {}, targetUrl = OVERTIME_SCRIPT_URL) =>
   const reqBodyObj = {
     action,
     ...payload,
-    user: localStorage.getItem('ogm_admin_role') || 'Ziyaretçi'
+    user: payload?.user || 'Sistem'
   };
 
   const isGetMethod = action === 'get_init_data' || Object.keys(payload).length === 0;
@@ -1164,6 +1156,7 @@ const App = () => {
   const [updateNotice, setUpdateNotice] = useState(null); // Notice modal details
   const isFirstLoad = React.useRef(true);
   const autoApprovingRef = React.useRef(false);
+  const seenAlertsRef = React.useRef([]);
   const [selectedPerson, setSelectedPerson] = useState(null);
   const [hoverPhoto, setHoverPhoto] = useState(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
@@ -1925,39 +1918,97 @@ const App = () => {
             return objs;
           };
 
+          const parseResponseToList = (text) => {
+            const trimmed = String(text || '').trim();
+            if (!trimmed || trimmed.startsWith('<')) return [];
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+              try {
+                const parsed = JSON.parse(trimmed);
+                if (Array.isArray(parsed)) return parsed;
+                if (Array.isArray(parsed?.data?.transactions)) return parsed.data.transactions;
+                if (Array.isArray(parsed?.transactions)) return parsed.transactions;
+                if (Array.isArray(parsed?.data)) return parsed.data;
+              } catch (e) {}
+              return [];
+            }
+            return rowsToObjects(parseCSV(trimmed));
+          };
+
           const fetchOne = async (url) => {
-            const bustUrl = `${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+            const sep = url.includes('?') ? '&' : '?';
+            const bustUrl = `${url}${sep}_t=${Date.now()}&r=${Math.random()}`;
             try {
-              const res = await fetch(bustUrl, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+              const res = await fetch(bustUrl, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(18000) });
               if (res.ok) {
                 const text = await res.text();
-                return rowsToObjects(parseCSV(text));
+                const list = parseResponseToList(text);
+                if (list.length > 0) return list;
               }
             } catch (e) {}
             try {
-              const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(bustUrl)}`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+              const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(bustUrl)}`, { cache: 'no-store', signal: AbortSignal.timeout(18000) });
               if (res.ok) {
                 const text = await res.text();
-                return rowsToObjects(parseCSV(text));
+                const list = parseResponseToList(text);
+                if (list.length > 0) return list;
               }
             } catch (e) {}
             try {
-              const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(bustUrl)}`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+              const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(bustUrl)}`, { cache: 'no-store', signal: AbortSignal.timeout(18000) });
               if (res.ok) {
                 const text = await res.text();
-                return rowsToObjects(parseCSV(text));
+                const list = parseResponseToList(text);
+                if (list.length > 0) return list;
               }
             } catch (e) {}
             return [];
           };
 
-          const [txs, pers, atts] = await Promise.all([
-            fetchOne(FAST_CSV_TRANSACTIONS),
+          const fetchLiveGasTransactions = async () => {
+            const sep = OVERTIME_SCRIPT_URL.includes('?') ? '&' : '?';
+            try {
+              const r = await fetch(`${OVERTIME_SCRIPT_URL}${sep}action=get_init_data&_t=${Date.now()}`, {
+                method: 'GET',
+                cache: 'no-store',
+                redirect: 'follow',
+                signal: AbortSignal.timeout(20000)
+              });
+              if (r.ok) {
+                const txt = await r.text();
+                if (txt && !txt.trim().startsWith('<')) {
+                  const j = JSON.parse(txt);
+                  const d = j?.data || j;
+                  if (d && Array.isArray(d.transactions)) return d;
+                }
+              }
+            } catch (e) {}
+            try {
+              const jd = await fetchJsonp(`${OVERTIME_SCRIPT_URL}${sep}action=get_init_data`, 20000);
+              if (jd && Array.isArray(jd.transactions)) return jd;
+            } catch (e) {}
+            return null;
+          };
+
+          const [gasInitData, pers, atts] = await Promise.all([
+            fetchLiveGasTransactions(),
             fetchOne(FAST_CSV_PERSONNEL),
             fetchOne(FAST_CSV_ATTENDANCE)
           ]);
 
-          if (txs.length > 0 || pers.length > 0) {
+          let txs = Array.isArray(gasInitData?.transactions) ? gasInitData.transactions : [];
+          if (txs.length === 0) {
+            txs = await fetchOne(FAST_CSV_TRANSACTIONS);
+          }
+
+          if (Array.isArray(gasInitData?.milatlar) && gasInitData.milatlar.length > 0) {
+            const cleanM = sanitizeMilatlarList(sortMilatlarClient(gasInitData.milatlar));
+            window.__OGM_MILATLAR__ = cleanM;
+            setMilatlar(cleanM);
+            setMilatGasSynced(true);
+            milatLoaded = true;
+          }
+
+          if (txs.length > 0 || pers.length > 0 || atts.length > 0) {
             resMain = {
               transactions: txs,
               personnel: pers,
@@ -1965,11 +2016,11 @@ const App = () => {
             };
           }
         } catch (clientCsvErr) {
-          console.warn("Client CSV fetch warning:", clientCsvErr);
+          console.warn("Client live fetch warning:", clientCsvErr);
         }
       }
 
-      // 2. Hızlı CSV'den veri gelmediyse Apps Script proxy ile çek
+      // 2. Hızlı uç noktadan veri gelmediyse Apps Script proxy ile çek
       if (!resMain || !resMain.personnel || resMain.personnel.length === 0) {
         const fetchMain = apiCall('get_init_data', {}, OVERTIME_SCRIPT_URL).catch((err) => { 
           console.warn("Plansız Mesai çekme uyarısı:", err?.message || err); 
@@ -1989,10 +2040,7 @@ const App = () => {
       }
 
       if (!resMain && !resPersonnel) {
-        const hasCachedPersonnel = personnel && personnel.length > 0;
-        if (!hasCachedPersonnel) {
-          showToast("Canlı sunucuya bağlanılamadı, yerel/önbellek verileriyle devam ediliyor.", "warning");
-        }
+        showToast("Canlı Google E-Tablo verilerine ulaşılamadı. Lütfen bağlantınızı kontrol edip Yenile butonuna basınız.", "error");
       }
 
       if (progressInterval) clearInterval(progressInterval);
@@ -2226,7 +2274,7 @@ const App = () => {
           }
         }
 
-        if (uniqueFormattedTX.length > 0) {
+        if (uniqueFormattedTX.length > 0 || (resMain && Array.isArray(resMain.transactions))) {
           latestTxList = uniqueFormattedTX;
           setTransactions(uniqueFormattedTX);
         }
@@ -2322,7 +2370,7 @@ const App = () => {
       if (!isFirstLoad.current) {
         const addedUniqueAtt = [];
         const addedUniqueTx = [];
-        const seenAlerts = JSON.parse(localStorage.getItem('ogm_seen_alerts') || '[]');
+        const seenAlerts = seenAlertsRef.current || [];
 
         if (latestAttList.length > 0 && prevAttendance.length > 0) {
           latestAttList.forEach(curr => {
@@ -2420,11 +2468,7 @@ const App = () => {
   useEffect(() => {
     const init = async () => {
       try {
-        Object.keys(localStorage).forEach(k => {
-          if (k.startsWith('ogm_') || k.includes('tx') || k.includes('transaction') || k.includes('attendance') || k.includes('personnel')) {
-            localStorage.removeItem(k);
-          }
-        });
+        localStorage.clear();
         sessionStorage.clear();
       } catch (e) {}
       setAdminRole(null);
@@ -4621,7 +4665,7 @@ const App = () => {
 
   const handleDismissUpdateNotice = () => {
     if (updateNotice) {
-      const seenAlerts = JSON.parse(localStorage.getItem('ogm_seen_alerts') || '[]');
+      const seenAlerts = seenAlertsRef.current || [];
 
       if (updateNotice.attendance) {
         updateNotice.attendance.forEach(att => {
@@ -4643,7 +4687,7 @@ const App = () => {
       if (seenAlerts.length > 1000) {
         seenAlerts.splice(0, seenAlerts.length - 1000);
       }
-      safeLocalStorageSetItem('ogm_seen_alerts', JSON.stringify(seenAlerts));
+      seenAlertsRef.current = seenAlerts;
     }
     setUpdateNotice(null);
   };
